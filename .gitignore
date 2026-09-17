@@ -1,0 +1,33 @@
+# 构建产物
+/mufish
+/mufish.exe
+/dist/
+/web/node_modules/
+
+# 注意：web/dist 是前端构建产物，通过 go:embed 打进二进制。
+# 为了让 `go build` 在没有 Node.js 的环境下也能工作，该目录需要提交到版本库。
+
+# ---------------------------------------------------------------------------
+# 运行期数据 —— 绝对不要提交
+# 默认数据目录（./mufish -data data）以及 SQLite 数据库 / WAL / 共享内存文件，
+# 还可能包含 backups/ 子目录与 .before-restore 回滚副本。
+# ---------------------------------------------------------------------------
+/data/
+data/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.db.before-restore
+backups/
+
+# 沙箱 / 本地缓存
+/.sandbox/
+.gocache/
+
+# 编辑器与系统文件
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
