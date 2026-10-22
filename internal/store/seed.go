@@ -360,10 +360,10 @@ func seedDemo(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO stock_moves(warehouse_id, product_id, biz_type, biz_id, biz_no, direction,
+			`INSERT INTO stock_moves(warehouse_id, product_id, biz_type, biz_id, biz_no, biz_date, direction,
 			   qty, price, amount, balance_after, remark, created_by, created_by_name, created_at)
-			 VALUES(?,?,'init',0,'期初',1,?,?,?,?,'系统初始化期初库存',0,'系统',?)`,
-			whID, pid, q, price, amount, q, now); err != nil {
+			 VALUES(?,?,'init',0,'期初',?,1,?,?,?,?,'系统初始化期初库存',0,'系统',?)`,
+			whID, pid, now[:10], q, price, amount, q, now); err != nil {
 			return err
 		}
 	}

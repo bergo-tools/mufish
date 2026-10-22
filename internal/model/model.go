@@ -270,6 +270,7 @@ type StockMove struct {
 	BizType       string `json:"biz_type" db:"biz_type"` // purchase/sales/take/transfer_in/transfer_out/init
 	BizID         int64  `json:"biz_id" db:"biz_id"`
 	BizNo         string `json:"biz_no" db:"biz_no"`
+	BizDate       string `json:"biz_date" db:"biz_date"`   // 业务日期（单据日期）
 	Direction     int    `json:"direction" db:"direction"` // 1 入库 -1 出库
 	Qty           Qty    `json:"qty" db:"qty"`             // 带符号数量
 	Price         Price  `json:"price" db:"price"`

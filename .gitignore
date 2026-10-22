@@ -21,6 +21,11 @@ data/
 *.db.before-restore
 backups/
 
+# 前端测试产物
+/web/test-results/
+/web/playwright-report/
+/web/.vitest/
+
 # 沙箱 / 本地缓存
 /.sandbox/
 .gocache/

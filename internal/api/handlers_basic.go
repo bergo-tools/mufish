@@ -246,27 +246,33 @@ func (h *Handler) productStocks(w http.ResponseWriter, r *http.Request) error {
 
 // exportProducts 导出商品 CSV。
 func (h *Handler) exportProducts(w http.ResponseWriter, r *http.Request) error {
-	page, err := h.st.ListProducts(r.Context(), store.ProductQuery{
+	q := store.ProductQuery{
 		Keyword:    qs(r, "keyword"),
 		CategoryID: qi64(r, "category_id", 0),
 		Status:     qi(r, "status", -1),
-		Page:       1,
 		Size:       500,
-	})
-	if err != nil {
-		return err
 	}
 	rows := [][]string{{"商品编码", "商品名称", "规格", "单位", "分类", "条码", "品牌", "参考进价", "参考售价", "安全库存", "当前库存", "状态"}}
-	for _, p := range page.List {
-		status := "启用"
-		if p.Status != 1 {
-			status = "停用"
+	for pageNo := 1; ; pageNo++ {
+		q.Page = pageNo
+		page, err := h.st.ListProducts(r.Context(), q)
+		if err != nil {
+			return err
 		}
-		rows = append(rows, []string{
-			p.Code, p.Name, p.Spec, p.Unit, p.CategoryName, p.Barcode, p.Brand,
-			p.PurchasePrice.String(), p.SalePrice.String(), p.SafetyStock.String(),
-			p.StockQty.String(), status,
-		})
+		for _, p := range page.List {
+			status := "启用"
+			if p.Status != 1 {
+				status = "停用"
+			}
+			rows = append(rows, []string{
+				p.Code, p.Name, p.Spec, p.Unit, p.CategoryName, p.Barcode, p.Brand,
+				p.PurchasePrice.String(), p.SalePrice.String(), p.SafetyStock.String(),
+				p.StockQty.String(), status,
+			})
+		}
+		if len(page.List) < q.Size || int64(pageNo*q.Size) >= page.Total {
+			break
+		}
 	}
 	h.st.AddLog(r.Context(), user(r).ID, user(r).Username, "商品资料", "导出", "导出商品清单", clientIP(r))
 	writeCSV(w, "商品清单", rows)
@@ -295,6 +301,14 @@ func (h *Handler) importProducts(w http.ResponseWriter, r *http.Request) error {
 	if len(records) > 0 && len(records[0]) > 0 && strings.Contains(records[0][0], "编码") {
 		records = records[1:]
 	}
+	cats, err := h.st.AllCategories(r.Context())
+	if err != nil {
+		return err
+	}
+	catIDs := make(map[string]int64, len(cats))
+	for _, c := range cats {
+		catIDs[strings.TrimSpace(c.Name)] = c.ID
+	}
 	okCount, failCount := 0, 0
 	var messages []string
 	for i, rec := range records {
@@ -321,6 +335,17 @@ func (h *Handler) importProducts(w http.ResponseWriter, r *http.Request) error {
 		}
 		if input.Unit == "" {
 			input.Unit = "个"
+		}
+		if categoryName := get(4); categoryName != "" {
+			categoryID, ok := catIDs[categoryName]
+			if !ok {
+				failCount++
+				if len(messages) < 8 {
+					messages = append(messages, fmt.Sprintf("第 %d 行：分类 %q 不存在", i+2, categoryName))
+				}
+				continue
+			}
+			input.CategoryID = categoryID
 		}
 		if _, err := h.st.SaveProduct(r.Context(), 0, input); err != nil {
 			failCount++

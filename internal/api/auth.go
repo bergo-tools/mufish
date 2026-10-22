@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
 	"time"
 
@@ -102,9 +101,4 @@ func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) error {
 	h.st.AddLog(r.Context(), u.ID, u.Username, "认证", "修改口令", "", clientIP(r))
 	writeOK(w, nil)
 	return nil
-}
-
-// securityQuestion 占位：预留找回口令能力。
-func (h *Handler) securityQuestion(w http.ResponseWriter, r *http.Request) error {
-	return fmt.Errorf("暂未开放")
 }

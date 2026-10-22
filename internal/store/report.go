@@ -169,10 +169,12 @@ type InoutQuery struct {
 	WarehouseID int64
 	CategoryID  int64
 	Keyword     string
-	GroupBy     string // product / warehouse
 }
 
 // InoutSummary 进销存汇总表。
+//
+// 期初 = 查询开始日之前的所有流水；本期 = 开始日到结束日（含当天）的流水；
+// 期末 = 期初 + 本期入库 - 本期出库。期末不能直接取当前库存，否则历史区间会失真。
 func (s *Store) InoutSummary(ctx context.Context, q InoutQuery) ([]model.InoutRow, error) {
 	from := q.From
 	to := q.To
@@ -183,15 +185,16 @@ func (s *Store) InoutSummary(ctx context.Context, q InoutQuery) ([]model.InoutRo
 		to = "9999-12-31"
 	}
 	args := []any{}
-	cond := []string{"p.status=1"}
+	cond := []string{"1=1"}
 	if kw := strings.TrimSpace(q.Keyword); kw != "" {
 		cond = append(cond, "(p.code LIKE ? OR p.name LIKE ?)")
 		like := "%" + kw + "%"
 		args = append(args, like, like)
 	}
 	if q.CategoryID > 0 {
-		cond = append(cond, "(p.category_id=? OR p.category_id IN (SELECT id FROM categories WHERE parent_id=?))")
-		args = append(args, q.CategoryID, q.CategoryID)
+		catCond, cargs := categoryTreeCond("p.category_id", q.CategoryID)
+		cond = append(cond, catCond)
+		args = append(args, cargs...)
 	}
 	whCond := ""
 	if q.WarehouseID > 0 {
@@ -202,25 +205,23 @@ func (s *Store) InoutSummary(ctx context.Context, q InoutQuery) ([]model.InoutRo
 	sqlStr := `
 	SELECT p.code AS code, p.name AS name, p.spec AS spec, p.unit AS unit,
 	  COALESCE((SELECT SUM(m.qty) FROM stock_moves m
-	            WHERE m.product_id=p.id AND m.created_at < ?` + whCond + `),0) AS init_qty,
-	  COALESCE((SELECT SUM(m.amount)*CASE WHEN (SELECT SUM(m.qty) FROM stock_moves m WHERE m.product_id=p.id AND m.created_at < ?` + whCond + `) < 0 THEN -1 ELSE 1 END
-	            FROM stock_moves m WHERE m.product_id=p.id AND m.created_at < ?` + whCond + `),0) AS init_amount,
+	            WHERE m.product_id=p.id AND m.biz_date < ?` + whCond + `),0) AS init_qty,
+	  COALESCE((SELECT SUM(CASE WHEN m.direction=1 THEN m.amount ELSE -m.amount END)
+	            FROM stock_moves m
+	            WHERE m.product_id=p.id AND m.biz_date < ?` + whCond + `),0) AS init_amount,
 	  COALESCE((SELECT SUM(m.qty) FROM stock_moves m
-	            WHERE m.product_id=p.id AND m.direction=1 AND m.created_at >= ? AND m.created_at <= ?` + whCond + `),0) AS in_qty,
+	            WHERE m.product_id=p.id AND m.direction=1 AND m.biz_date >= ? AND m.biz_date <= ?` + whCond + `),0) AS in_qty,
 	  COALESCE((SELECT SUM(m.amount) FROM stock_moves m
-	            WHERE m.product_id=p.id AND m.direction=1 AND m.created_at >= ? AND m.created_at <= ?` + whCond + `),0) AS in_amount,
+	            WHERE m.product_id=p.id AND m.direction=1 AND m.biz_date >= ? AND m.biz_date <= ?` + whCond + `),0) AS in_amount,
 	  COALESCE((SELECT SUM(-m.qty) FROM stock_moves m
-	            WHERE m.product_id=p.id AND m.direction=-1 AND m.created_at >= ? AND m.created_at <= ?` + whCond + `),0) AS out_qty,
+	            WHERE m.product_id=p.id AND m.direction=-1 AND m.biz_date >= ? AND m.biz_date <= ?` + whCond + `),0) AS out_qty,
 	  COALESCE((SELECT SUM(m.amount) FROM stock_moves m
-	            WHERE m.product_id=p.id AND m.direction=-1 AND m.created_at >= ? AND m.created_at <= ?` + whCond + `),0) AS out_amount,
-	  COALESCE((SELECT SUM(st.qty) FROM stocks st WHERE st.product_id=p.id` + whCondReplace(whCond) + `),0) AS end_qty,
-	  COALESCE((SELECT SUM(st.amount) FROM stocks st WHERE st.product_id=p.id` + whCondReplace(whCond) + `),0) AS end_amount
+	            WHERE m.product_id=p.id AND m.direction=-1 AND m.biz_date >= ? AND m.biz_date <= ?` + whCond + `),0) AS out_amount
 	FROM products p
 	WHERE ` + where + `
 	ORDER BY p.code`
 
-	fromDT := from + " 00:00:00"
-	qargs := []any{fromDT, fromDT, fromDT, from, to, from, to, from, to, from, to}
+	qargs := []any{from, from, from, to, from, to, from, to, from, to}
 	qargs = append(qargs, args...)
 
 	rows, err := query[model.InoutRow](ctx, s.db, sqlStr, qargs...)
@@ -229,20 +230,15 @@ func (s *Store) InoutSummary(ctx context.Context, q InoutQuery) ([]model.InoutRo
 	}
 	out := make([]model.InoutRow, 0, len(rows))
 	for _, r := range rows {
-		if r.InitQty == 0 && r.InQty == 0 && r.OutQty == 0 && r.EndQty == 0 {
+		r.EndQty = r.InitQty + r.InQty - r.OutQty
+		r.EndAmount = r.InitAmount + r.InAmount - r.OutAmount
+		if r.InitQty == 0 && r.InQty == 0 && r.OutQty == 0 {
 			continue
 		}
 		r.Key = r.Code
 		out = append(out, r)
 	}
 	return out, nil
-}
-
-func whCondReplace(whCond string) string {
-	if whCond == "" {
-		return ""
-	}
-	return strings.Replace(whCond, "m.warehouse_id", "st.warehouse_id", 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -264,16 +260,21 @@ func (s *Store) SalesRank(ctx context.Context, q RankQuery) ([]model.RankRow, er
 	}
 	from, to := dateRange(q.From, q.To)
 	return query[model.RankRow](ctx, s.db,
-		`SELECT i.product_code AS code, i.product_name AS name, i.spec AS spec, i.unit AS unit,
-		   SUM(i.qty) AS qty, SUM(i.amount) AS amount, SUM(i.cost_price * i.qty / 100) AS cost,
-		   SUM(i.amount) - SUM(i.cost_price * i.qty / 100) AS profit,
-		   CASE WHEN SUM(i.amount) > 0
-		     THEN (SUM(i.amount) - SUM(i.cost_price * i.qty / 100)) * 100.0 / SUM(i.amount) ELSE 0 END AS rate,
-		   COUNT(DISTINCT i.order_id) AS doc_count
-		 FROM sales_items i JOIN sales_orders o ON o.id = i.order_id
-		 WHERE o.status=1 AND o.order_date >= ? AND o.order_date <= ?
-		 GROUP BY i.product_id, i.product_code, i.product_name, i.spec, i.unit
-		 ORDER BY amount DESC LIMIT ?`, from, to, q.Limit)
+		`WITH s AS (
+		   SELECT i.product_code AS code, i.product_name AS name, i.spec AS spec, i.unit AS unit,
+		     SUM(i.qty) AS qty, SUM(i.amount) AS amount,
+		     SUM(i.cost_price * i.qty) / 100.0 AS cost,
+		     COUNT(DISTINCT i.order_id) AS doc_count
+		   FROM sales_items i JOIN sales_orders o ON o.id = i.order_id
+		   WHERE o.status=1 AND o.order_date >= ? AND o.order_date <= ?
+		   GROUP BY i.product_id, i.product_code, i.product_name, i.spec, i.unit
+		 )
+		 SELECT code, name, spec, unit, qty, amount,
+		   CAST(ROUND(cost) AS INTEGER) AS cost,
+		   CAST(ROUND(amount - cost) AS INTEGER) AS profit,
+		   CASE WHEN amount > 0 THEN ROUND((amount - cost) * 100.0 / amount, 4) ELSE 0 END AS rate,
+		   doc_count
+		 FROM s ORDER BY amount DESC LIMIT ?`, from, to, q.Limit)
 }
 
 // CustomerRank 客户销售排行。
@@ -418,9 +419,9 @@ func (s *Store) PurchaseDetail(ctx context.Context, q DocDetailQuery) ([]model.O
 		args = append(args, q.ProductID)
 	}
 	if kw := strings.TrimSpace(q.Keyword); kw != "" {
-		where = append(where, "(o.order_no LIKE ? OR i.product_name LIKE ? OR o.supplier_name LIKE ?)")
+		where = append(where, "(o.order_no LIKE ? OR i.product_code LIKE ? OR i.product_name LIKE ? OR o.supplier_name LIKE ?)")
 		like := "%" + kw + "%"
-		args = append(args, like, like, like)
+		args = append(args, like, like, like, like)
 	}
 	limit := q.Limit
 	if limit <= 0 || limit > 5000 {
@@ -452,9 +453,9 @@ func (s *Store) SalesDetail(ctx context.Context, q DocDetailQuery) ([]model.Orde
 		args = append(args, q.ProductID)
 	}
 	if kw := strings.TrimSpace(q.Keyword); kw != "" {
-		where = append(where, "(o.order_no LIKE ? OR i.product_name LIKE ? OR o.customer_name LIKE ?)")
+		where = append(where, "(o.order_no LIKE ? OR i.product_code LIKE ? OR i.product_name LIKE ? OR o.customer_name LIKE ?)")
 		like := "%" + kw + "%"
-		args = append(args, like, like, like)
+		args = append(args, like, like, like, like)
 	}
 	limit := q.Limit
 	if limit <= 0 || limit > 5000 {
@@ -471,21 +472,6 @@ func (s *Store) SalesDetail(ctx context.Context, q DocDetailQuery) ([]model.Orde
 // ---------------------------------------------------------------------------
 // 资金流水
 // ---------------------------------------------------------------------------
-
-// CashFlowRow 资金流水行。
-type CashFlowRow struct {
-	ID        int64       `json:"id" db:"id"`
-	PayDate   string      `json:"pay_date" db:"pay_date"`
-	PaymentNo string      `json:"payment_no" db:"payment_no"`
-	Type      string      `json:"type" db:"type"`
-	Partner   string      `json:"partner_name" db:"partner_name"`
-	Account   string      `json:"account_name" db:"account_name"`
-	Method    string      `json:"method" db:"method"`
-	Direction int         `json:"direction" db:"direction"`
-	Amount    model.Money `json:"amount" db:"amount"`
-	OrderNo   string      `json:"order_no" db:"order_no"`
-	Remark    string      `json:"remark" db:"remark"`
-}
 
 // CashFlow 资金流水表。
 func (s *Store) CashFlow(ctx context.Context, from, to string, accountID int64, limit int) ([]model.Payment, error) {
@@ -519,11 +505,13 @@ func (s *Store) StockSummary(ctx context.Context, warehouseID, categoryID int64)
 		args = append(args, warehouseID)
 	}
 	if categoryID > 0 {
-		where = append(where, "(p.category_id=? OR p.category_id IN (SELECT id FROM categories WHERE parent_id=?))")
-		args = append(args, categoryID, categoryID)
+		cond, cargs := categoryTreeCond("p.category_id", categoryID)
+		where = append(where, cond)
+		args = append(args, cargs...)
 	}
 	r, _, err := queryRow[row](ctx, s.db,
-		`SELECT COUNT(DISTINCT st.product_id) AS kinds, COALESCE(SUM(st.qty),0) AS qty, COALESCE(SUM(st.amount),0) AS amount
+		`SELECT COUNT(DISTINCT CASE WHEN st.qty<>0 THEN st.product_id END) AS kinds,
+		   COALESCE(SUM(st.qty),0) AS qty, COALESCE(SUM(st.amount),0) AS amount
 		 FROM stocks st JOIN products p ON p.id=st.product_id WHERE `+strings.Join(where, " AND "), args...)
 	if err != nil {
 		return nil, err

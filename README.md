@@ -72,7 +72,7 @@ go build -o mufish .
 | `sales` | `admin123` | 销售员 |
 | `stock` | `admin123` | 仓管员 |
 
-> 首次登录后请立即到「个人中心」修改口令。首次启动会自动写入一批演示用的商品、往来单位与期初库存，方便直接体验；可在「系统参数」中按需清理。
+> 首次登录后请立即到「个人中心」修改口令。首次启动会自动写入一批演示用的商品、往来单位与期初库存，方便直接体验；演示数据只在数据库首次初始化时写入，如需清空，请先备份，再停止程序并删除数据目录中的 `mufish.db`（会重置全部数据，重启后重新初始化）。
 
 ## 功能一览
 
@@ -157,10 +157,19 @@ go build -o mufish .
 make web      # 构建前端
 make dev      # 启动后端（http://127.0.0.1:8899）
 make watch    # 另开终端：esbuild 监听模式，改前端后刷新浏览器即可
-make test     # 运行单元测试
+make test            # 后端单元测试
+make test-web        # 前端纯函数单元测试
+make test-components # 前端组件测试
+make test-e2e        # 浏览器端到端测试（Playwright）
+make test-all        # 后端 + 前端单元/组件测试
+make cover           # 后端测试覆盖率
 make vet      # go vet
 make cross    # 交叉编译 Linux / Windows / macOS
 ```
+
+> `make test-e2e` 使用 Playwright + 系统 Chrome；没有 Chrome 的环境可执行 `cd web && npx playwright install chromium`，并把 `playwright.config.js` 的 `channel` 改为 `chromium`。
+
+开发流程、Kanban 版本跟踪与测试约定见 [AGENTS.md](AGENTS.md)。
 
 ### 交叉编译
 

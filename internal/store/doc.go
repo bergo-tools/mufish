@@ -25,6 +25,7 @@ type stockMoveReq struct {
 	BizType     string
 	BizID       int64
 	BizNo       string
+	BizDate     string // 业务日期（单据日期）
 	Remark      string
 	User        OpUser
 	// Strict 为 true 时库存不足则报错。
@@ -114,11 +115,12 @@ func applyStock(ctx context.Context, tx *sql.Tx, req stockMoveReq) (stockMoveRes
 	if delta < 0 {
 		direction = -1
 	}
+	bizDate := model.NormDate(req.BizDate)
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO stock_moves(warehouse_id, product_id, biz_type, biz_id, biz_no, direction,
+		`INSERT INTO stock_moves(warehouse_id, product_id, biz_type, biz_id, biz_no, biz_date, direction,
 		   qty, price, amount, balance_after, remark, created_by, created_by_name, created_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		req.WarehouseID, req.ProductID, req.BizType, req.BizID, req.BizNo, direction,
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		req.WarehouseID, req.ProductID, req.BizType, req.BizID, req.BizNo, bizDate, direction,
 		delta, movePrice, moveAmount, newQty, req.Remark, req.User.ID, req.User.Name, now); err != nil {
 		return res, err
 	}
@@ -132,7 +134,7 @@ func applyStock(ctx context.Context, tx *sql.Tx, req stockMoveReq) (stockMoveRes
 // reverseMovesByBiz 冲销某单据产生的库存流水（按相反方向）。
 func reverseMovesByBiz(ctx context.Context, tx *sql.Tx, bizType string, bizID int64, user OpUser) error {
 	moves, err := query[model.StockMove](ctx, tx,
-		`SELECT id, warehouse_id, product_id, biz_type, biz_id, biz_no, direction,
+		`SELECT id, warehouse_id, product_id, biz_type, biz_id, biz_no, biz_date, direction,
 		   qty, price, amount, balance_after, remark, created_by, created_at
 		 FROM stock_moves WHERE biz_type=? AND biz_id=? ORDER BY id DESC`, bizType, bizID)
 	if err != nil {
@@ -150,6 +152,7 @@ func reverseMovesByBiz(ctx context.Context, tx *sql.Tx, bizType string, bizID in
 			BizType:     m.BizType,
 			BizID:       m.BizID,
 			BizNo:       m.BizNo,
+			BizDate:     m.BizDate,
 			Remark:      "作废冲销",
 			User:        user,
 		})
@@ -241,7 +244,7 @@ const purchaseCols = `o.id, o.order_no, o.supplier_id, o.supplier_name, o.wareho
 // ListPurchases 分页查询采购单。
 func (s *Store) ListPurchases(ctx context.Context, q PurchaseQuery) (model.Page[model.PurchaseOrder], error) {
 	var out model.Page[model.PurchaseOrder]
-	where, args := docFilter(q.Keyword, q.From, q.To, q.Status)
+	where, args := docFilter(q.Keyword, q.From, q.To, q.Status, "o.supplier_name")
 	if q.SupplierID > 0 {
 		where = append(where, "o.supplier_id=?")
 		args = append(args, q.SupplierID)
@@ -311,7 +314,7 @@ func (s *Store) SavePurchase(ctx context.Context, id int64, in PurchaseInput, us
 	now := model.Now()
 
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
-		supplier, err := loadPartnerName(ctx, tx, in.SupplierID)
+		supplier, err := loadPartnerForRole(ctx, tx, in.SupplierID, "supplier")
 		if err != nil {
 			return err
 		}
@@ -388,9 +391,7 @@ func insertPurchaseItems(ctx context.Context, tx *sql.Tx, orderID int64, items [
 
 // ConfirmPurchase 采购入库确认：增加库存。
 func (s *Store) ConfirmPurchase(ctx context.Context, id int64, user OpUser) error {
-	strict := !s.SettingBool(ctx, "allow_negative_stock", false)
 	followPrice := s.SettingBool(ctx, "purchase_price_follow", true)
-	_ = strict
 	return s.Tx(ctx, func(tx *sql.Tx) error {
 		o, ok, err := queryRow[model.PurchaseOrder](ctx, tx,
 			`SELECT `+purchaseCols+` FROM purchase_orders o WHERE o.id=?`, id)
@@ -421,6 +422,7 @@ func (s *Store) ConfirmPurchase(ctx context.Context, id int64, user OpUser) erro
 				BizType:     "purchase",
 				BizID:       o.ID,
 				BizNo:       o.OrderNo,
+				BizDate:     o.OrderDate,
 				User:        user,
 			}); err != nil {
 				return err
@@ -510,7 +512,7 @@ const salesCols = `o.id, o.order_no, o.customer_id, o.customer_name, o.warehouse
 // ListSales 分页查询销售单。
 func (s *Store) ListSales(ctx context.Context, q SalesQuery) (model.Page[model.SalesOrder], error) {
 	var out model.Page[model.SalesOrder]
-	where, args := docFilter(q.Keyword, q.From, q.To, q.Status)
+	where, args := docFilter(q.Keyword, q.From, q.To, q.Status, "o.customer_name")
 	if q.CustomerID > 0 {
 		where = append(where, "o.customer_id=?")
 		args = append(args, q.CustomerID)
@@ -579,7 +581,7 @@ func (s *Store) SaveSales(ctx context.Context, id int64, in SalesInput, user OpU
 	now := model.Now()
 
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
-		customer, err := loadPartnerName(ctx, tx, in.CustomerID)
+		customer, err := loadPartnerForRole(ctx, tx, in.CustomerID, "customer")
 		if err != nil {
 			return err
 		}
@@ -692,6 +694,7 @@ func (s *Store) ConfirmSales(ctx context.Context, id int64, user OpUser) error {
 				BizType:     "sales",
 				BizID:       o.ID,
 				BizNo:       o.OrderNo,
+				BizDate:     o.OrderDate,
 				User:        user,
 				Strict:      strict,
 			})
@@ -768,11 +771,13 @@ func (s *Store) DeleteSales(ctx context.Context, id int64) error {
 // 辅助
 // ---------------------------------------------------------------------------
 
-func docFilter(keyword, from, to string, status int) ([]string, []any) {
+// docFilter 构造采购单/销售单的通用过滤条件。
+// partnerCol 必须是内部常量（o.supplier_name / o.customer_name），不能来自用户输入。
+func docFilter(keyword, from, to string, status int, partnerCol string) ([]string, []any) {
 	where := []string{"1=1"}
 	args := []any{}
 	if kw := strings.TrimSpace(keyword); kw != "" {
-		where = append(where, "(o.order_no LIKE ? OR o.supplier_name LIKE ? OR o.customer_name LIKE ? OR o.warehouse_name LIKE ?)")
+		where = append(where, "(o.order_no LIKE ? OR "+partnerCol+" LIKE ? OR o.warehouse_name LIKE ? OR o.remark LIKE ?)")
 		like := "%" + kw + "%"
 		args = append(args, like, like, like, like)
 	}
@@ -803,6 +808,33 @@ func loadPartnerName(ctx context.Context, tx *sql.Tx, id int64) (string, error) 
 	return name, err
 }
 
+// loadPartnerForRole 读取往来单位，并校验其类型是否满足业务角色。
+// role 为 supplier 时允许 supplier / both，为 customer 时允许 customer / both。
+func loadPartnerForRole(ctx context.Context, tx *sql.Tx, id int64, role string) (string, error) {
+	if id == 0 {
+		return "", fmt.Errorf("%w: 请选择往来单位", ErrBadRequest)
+	}
+	var name, typ string
+	err := tx.QueryRowContext(ctx, `SELECT name, type FROM partners WHERE id=?`, id).Scan(&name, &typ)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("%w: 往来单位不存在", ErrBadRequest)
+	}
+	if err != nil {
+		return "", err
+	}
+	switch role {
+	case "supplier":
+		if typ != "supplier" && typ != "both" {
+			return "", fmt.Errorf("%w: 采购单必须选择供应商", ErrBadRequest)
+		}
+	case "customer":
+		if typ != "customer" && typ != "both" {
+			return "", fmt.Errorf("%w: 销售单必须选择客户", ErrBadRequest)
+		}
+	}
+	return name, nil
+}
+
 func loadWarehouseName(ctx context.Context, tx *sql.Tx, id int64) (string, error) {
 	if id == 0 {
 		wh, ok, err := queryRow[model.Warehouse](ctx, tx,
@@ -816,9 +848,16 @@ func loadWarehouseName(ctx context.Context, tx *sql.Tx, id int64) (string, error
 		return wh.Name, nil
 	}
 	var name string
-	err := tx.QueryRowContext(ctx, `SELECT name FROM warehouses WHERE id=?`, id).Scan(&name)
+	var status int
+	err := tx.QueryRowContext(ctx, `SELECT name, status FROM warehouses WHERE id=?`, id).Scan(&name, &status)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("%w: 仓库不存在", ErrBadRequest)
 	}
-	return name, err
+	if err != nil {
+		return "", err
+	}
+	if status != 1 {
+		return "", fmt.Errorf("%w: 仓库已停用，请选择其他仓库", ErrBadRequest)
+	}
+	return name, nil
 }

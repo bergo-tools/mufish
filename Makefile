@@ -13,7 +13,7 @@ LDFLAGS  := -s -w -X main.version=$(VERSION)
 GOFLAGS  :=
 GO       ?= go
 
-.PHONY: all build web run dev test vet fmt tidy clean cross install help
+.PHONY: all build web run dev test test-web test-components test-e2e test-all cover vet fmt tidy clean cross install help
 
 all: build
 
@@ -38,9 +38,28 @@ dev:
 watch:
 	cd web && npm run dev
 
-## test        单元测试
+## test        后端单元测试
 test:
 	$(GO) test ./...
+
+## test-web    前端纯函数测试（Node 内置 test runner）
+test-web:
+	@cd web && (test -d node_modules || npm install --no-audit --no-fund) && npm test
+
+## test-components  前端组件测试（Vitest + jsdom）
+test-components:
+	@cd web && (test -d node_modules || npm install --no-audit --no-fund) && npm run test:components
+
+## test-e2e    浏览器端到端测试（Playwright + 系统 Chrome）
+test-e2e:
+	@cd web && (test -d node_modules || npm install --no-audit --no-fund) && npm run test:e2e
+
+## test-all    后端 + 前端单元/组件测试
+test-all: test test-web test-components
+
+## cover       后端测试覆盖率
+cover:
+	$(GO) test -cover ./...
 
 ## vet         静态检查
 vet:

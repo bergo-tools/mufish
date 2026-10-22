@@ -6,12 +6,21 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "dev": "node build.mjs --watch"
+    "dev": "node build.mjs --watch",
+    "test": "node --test test/*.test.js",
+    "test:components": "vitest run",
+    "test:e2e": "playwright test",
+    "test:all": "npm run test && npm run test:components"
   },
   "dependencies": {
     "preact": "^10.24.3"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0"
+    "@playwright/test": "^1.64.1",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/preact": "^3.2.4",
+    "esbuild": "^0.24.0",
+    "jsdom": "^29.1.1",
+    "vitest": "^4.1.12"
   }
 }

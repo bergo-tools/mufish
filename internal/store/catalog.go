@@ -25,7 +25,9 @@ func (s *Store) ListCategories(ctx context.Context) ([]model.Category, error) {
 	for i := range flat {
 		byID[flat[i].ID] = &flat[i]
 	}
-	roots := make([]model.Category, 0, len(flat))
+	// 先完成所有父子链接，再复制根节点。
+	// 若边遍历边复制，父节点排在子节点之前时会丢失 children。
+	roots := make([]*model.Category, 0, len(flat))
 	for i := range flat {
 		c := &flat[i]
 		if c.ParentID != 0 {
@@ -34,9 +36,13 @@ func (s *Store) ListCategories(ctx context.Context) ([]model.Category, error) {
 				continue
 			}
 		}
-		roots = append(roots, *c)
+		roots = append(roots, c)
 	}
-	return roots, nil
+	out := make([]model.Category, 0, len(roots))
+	for _, r := range roots {
+		out = append(out, *r)
+	}
+	return out, nil
 }
 
 // AllCategories 查询扁平分类列表。
@@ -53,6 +59,19 @@ type CategoryInput struct {
 	Remark   string `json:"remark"`
 }
 
+// categoryTreeCond 返回「分类自身及其全部后代」的 SQL 条件。
+// column 只传内部常量，不能来自用户输入。
+func categoryTreeCond(column string, id int64) (string, []any) {
+	return column + ` IN (
+		WITH RECURSIVE sub(id) AS (
+			SELECT id FROM categories WHERE id=?
+			UNION
+			SELECT c.id FROM categories c JOIN sub s ON c.parent_id=s.id
+		)
+		SELECT id FROM sub
+	)`, []any{id}
+}
+
 // SaveCategory 新建或更新分类。
 func (s *Store) SaveCategory(ctx context.Context, id int64, in CategoryInput) (int64, error) {
 	in.Name = strings.TrimSpace(in.Name)
@@ -62,19 +81,55 @@ func (s *Store) SaveCategory(ctx context.Context, id int64, in CategoryInput) (i
 	if id > 0 && in.ParentID == id {
 		return 0, fmt.Errorf("%w: 上级分类不能是自己", ErrBadRequest)
 	}
-	if id > 0 {
-		_, err := s.db.ExecContext(ctx,
-			`UPDATE categories SET name=?, parent_id=?, sort=?, remark=? WHERE id=?`,
-			in.Name, in.ParentID, in.Sort, in.Remark, id)
-		return id, wrapErr(err, "update category")
-	}
-	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO categories(name, parent_id, sort, remark) VALUES(?,?,?,?)`,
-		in.Name, in.ParentID, in.Sort, in.Remark)
-	if err != nil {
-		return 0, wrapErr(err, "insert category")
-	}
-	return res.LastInsertId()
+
+	outID := id
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		if in.ParentID > 0 {
+			var parent int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM categories WHERE id=?`, in.ParentID).Scan(&parent); err != nil {
+				return err
+			}
+			if parent == 0 {
+				return fmt.Errorf("%w: 上级分类不存在", ErrBadRequest)
+			}
+		}
+		if id > 0 {
+			// 不能把父级设置成自己的任意后代，否则分类树会形成环。
+			if in.ParentID > 0 {
+				var descendants int
+				if err := tx.QueryRowContext(ctx,
+					`WITH RECURSIVE sub(id) AS (
+					   SELECT id FROM categories WHERE parent_id=?
+					   UNION
+					   SELECT c.id FROM categories c JOIN sub s ON c.parent_id=s.id
+					 ) SELECT COUNT(*) FROM sub WHERE id=?`, id, in.ParentID).Scan(&descendants); err != nil {
+					return err
+				}
+				if descendants > 0 {
+					return fmt.Errorf("%w: 上级分类不能是自己的下级", ErrBadRequest)
+				}
+			}
+			res, err := tx.ExecContext(ctx,
+				`UPDATE categories SET name=?, parent_id=?, sort=?, remark=? WHERE id=?`,
+				in.Name, in.ParentID, in.Sort, in.Remark, id)
+			if err != nil {
+				return wrapErr(err, "update category")
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return ErrNotFound
+			}
+			return nil
+		}
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO categories(name, parent_id, sort, remark) VALUES(?,?,?,?)`,
+			in.Name, in.ParentID, in.Sort, in.Remark)
+		if err != nil {
+			return wrapErr(err, "insert category")
+		}
+		outID, _ = res.LastInsertId()
+		return nil
+	})
+	return outID, err
 }
 
 // DeleteCategory 删除分类。
@@ -93,8 +148,14 @@ func (s *Store) DeleteCategory(ctx context.Context, id int64) error {
 	if used > 0 {
 		return fmt.Errorf("%w: 有 %d 个商品使用该分类", ErrInUse, used)
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM categories WHERE id=?`, id)
-	return wrapErr(err, "delete category")
+	res, err := s.db.ExecContext(ctx, `DELETE FROM categories WHERE id=?`, id)
+	if err != nil {
+		return wrapErr(err, "delete category")
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -125,8 +186,9 @@ func (s *Store) ListProducts(ctx context.Context, q ProductQuery) (model.Page[mo
 		args = append(args, like, like, like, like, like)
 	}
 	if q.CategoryID > 0 {
-		where = append(where, "(p.category_id = ? OR p.category_id IN (SELECT id FROM categories WHERE parent_id=?))")
-		args = append(args, q.CategoryID, q.CategoryID)
+		cond, cargs := categoryTreeCond("p.category_id", q.CategoryID)
+		where = append(where, cond)
+		args = append(args, cargs...)
 	}
 	if q.Status == 0 || q.Status == 1 {
 		where = append(where, "p.status=?")
@@ -206,14 +268,27 @@ func (s *Store) SaveProduct(ctx context.Context, id int64, in ProductInput) (int
 	}
 	now := model.Now()
 	if id > 0 {
-		_, err := s.db.ExecContext(ctx,
+		if in.Code == "" {
+			code, err := existingCode(ctx, s.db, "products", id)
+			if err != nil {
+				return 0, err
+			}
+			in.Code = code
+		}
+		res, err := s.db.ExecContext(ctx,
 			`UPDATE products SET code=?, name=?, spec=?, unit=?, category_id=?, barcode=?, brand=?,
 			   purchase_price=?, sale_price=?, safety_stock=?, safety_stock_max=?, status=?, remark=?, updated_at=?
 			 WHERE id=?`,
 			in.Code, in.Name, in.Spec, in.Unit, in.CategoryID, in.Barcode, in.Brand,
 			in.PurchasePrice, in.SalePrice, in.SafetyStock, in.SafetyStockMax,
 			normStatus(in.Status), in.Remark, now, id)
-		return id, wrapErr(err, "update product")
+		if err != nil {
+			return 0, wrapErr(err, "update product")
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return 0, ErrNotFound
+		}
+		return id, nil
 	}
 	if in.Code == "" {
 		code, err := nextSimpleCode(ctx, s.db, "products", "SP", 4)
@@ -255,8 +330,14 @@ func (s *Store) DeleteProduct(ctx context.Context, id int64) error {
 			return fmt.Errorf("%w: %s，建议改为「停用」", ErrInUse, c.msg)
 		}
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM products WHERE id=?`, id)
-	return wrapErr(err, "delete product")
+	res, err := s.db.ExecContext(ctx, `DELETE FROM products WHERE id=?`, id)
+	if err != nil {
+		return wrapErr(err, "delete product")
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // UpdateProductPrices 依据最近一次采购 / 销售更新商品参考价。
@@ -271,33 +352,38 @@ func updateProductRefPrice(ctx context.Context, tx *sql.Tx, productID int64, pri
 }
 
 // nextSimpleCode 生成形如 SP0001 的编码。
+//
+// 注意：SQLite 连接池上限为 1，查询必须使用 QueryRowContext 或及时关闭 Rows，
+// 否则在持有结果集的情况下继续查询会等待同一个连接，造成阻塞。
 func nextSimpleCode(ctx context.Context, db execer, table, prefix string, pad int) (string, error) {
-	sqlStr := `SELECT COALESCE(MAX(id),0)+1 FROM ` + table
-	rows, err := db.QueryContext(ctx, sqlStr)
-	if err != nil {
-		return "", err
-	}
-	defer rows.Close()
 	var next int
-	if rows.Next() {
-		_ = rows.Scan(&next)
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0)+1 FROM `+table).Scan(&next); err != nil {
+		return "", wrapErr(err, "next code")
 	}
 	for i := 0; i < 10000; i++ {
 		code := prefix + padNum(next+i, pad)
 		var exists int
-		rows2, err := db.QueryContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE code=?`, code)
-		if err != nil {
-			return "", err
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE code=?`, code).Scan(&exists); err != nil {
+			return "", wrapErr(err, "check code")
 		}
-		if rows2.Next() {
-			_ = rows2.Scan(&exists)
-		}
-		rows2.Close()
 		if exists == 0 {
 			return code, nil
 		}
 	}
-	return prefix + padNum(next, pad), nil
+	return "", fmt.Errorf("%w: 无法生成唯一编码，请手工填写编码", ErrBadRequest)
+}
+
+// existingCode 读取指定记录的编码，不存在时返回 ErrNotFound。
+func existingCode(ctx context.Context, db execer, table string, id int64) (string, error) {
+	var code string
+	err := db.QueryRowContext(ctx, `SELECT code FROM `+table+` WHERE id=?`, id).Scan(&code)
+	if err == sql.ErrNoRows {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", wrapErr(err, "load code")
+	}
+	return code, nil
 }
 
 func padNum(n, width int) string {
@@ -412,14 +498,15 @@ func (s *Store) PartnerBalance(ctx context.Context, id int64) (model.Money, mode
 		return 0, 0, err
 	}
 	var saleTotal, saleReceived, purTotal, purPaid int64
+	// 只有已确认的单据才影响应收应付，草稿和已作废单据不计入。
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(settle_amount),0), COALESCE(SUM(received_amount),0)
-		 FROM sales_orders WHERE customer_id=? AND status<>2`, id).Scan(&saleTotal, &saleReceived); err != nil {
+		 FROM sales_orders WHERE customer_id=? AND status=1`, id).Scan(&saleTotal, &saleReceived); err != nil {
 		return 0, 0, err
 	}
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(settle_amount),0), COALESCE(SUM(paid_amount),0)
-		 FROM purchase_orders WHERE supplier_id=? AND status<>2`, id).Scan(&purTotal, &purPaid); err != nil {
+		 FROM purchase_orders WHERE supplier_id=? AND status=1`, id).Scan(&purTotal, &purPaid); err != nil {
 		return 0, 0, err
 	}
 	// 未关联单据的收付款
@@ -471,14 +558,27 @@ func (s *Store) SavePartner(ctx context.Context, id int64, in PartnerInput) (int
 	}
 	now := model.Now()
 	if id > 0 {
-		_, err := s.db.ExecContext(ctx,
+		if in.Code == "" {
+			code, err := existingCode(ctx, s.db, "partners", id)
+			if err != nil {
+				return 0, err
+			}
+			in.Code = code
+		}
+		res, err := s.db.ExecContext(ctx,
 			`UPDATE partners SET code=?, name=?, type=?, contact=?, phone=?, address=?, tax_no=?,
 			   bank_name=?, bank_account=?, credit_limit=?, init_receivable=?, init_payable=?,
 			   status=?, remark=?, updated_at=? WHERE id=?`,
 			in.Code, in.Name, in.Type, in.Contact, in.Phone, in.Address, in.TaxNo,
 			in.BankName, in.BankAccount, in.CreditLimit, in.InitReceivable, in.InitPayable,
 			normStatus(in.Status), in.Remark, now, id)
-		return id, wrapErr(err, "update partner")
+		if err != nil {
+			return 0, wrapErr(err, "update partner")
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return 0, ErrNotFound
+		}
+		return id, nil
 	}
 	if in.Code == "" {
 		prefix := "KH"
@@ -523,8 +623,14 @@ func (s *Store) DeletePartner(ctx context.Context, id int64) error {
 			return fmt.Errorf("%w: %s，建议改为「停用」", ErrInUse, c.msg)
 		}
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM partners WHERE id=?`, id)
-	return wrapErr(err, "delete partner")
+	res, err := s.db.ExecContext(ctx, `DELETE FROM partners WHERE id=?`, id)
+	if err != nil {
+		return wrapErr(err, "delete partner")
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -602,12 +708,25 @@ func (s *Store) SaveWarehouse(ctx context.Context, id int64, in WarehouseInput) 
 			}
 		}
 		if id > 0 {
-			_, err := tx.ExecContext(ctx,
+			if in.Code == "" {
+				code, err := existingCode(ctx, tx, "warehouses", id)
+				if err != nil {
+					return err
+				}
+				in.Code = code
+			}
+			res, err := tx.ExecContext(ctx,
 				`UPDATE warehouses SET code=?, name=?, address=?, contact=?, phone=?, is_default=?,
 				   sort=?, status=?, remark=?, updated_at=? WHERE id=?`,
 				in.Code, in.Name, in.Address, in.Contact, in.Phone, boolInt(in.IsDefault),
 				in.Sort, normStatus(in.Status), in.Remark, now, id)
-			return wrapErr(err, "update warehouse")
+			if err != nil {
+				return wrapErr(err, "update warehouse")
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return ErrNotFound
+			}
+			return nil
 		}
 		if in.Code == "" {
 			code, err := nextSimpleCode(ctx, tx, "warehouses", "WH", 3)
@@ -662,8 +781,14 @@ func (s *Store) DeleteWarehouse(ctx context.Context, id int64) error {
 			return fmt.Errorf("%w: 该仓库已被业务单据引用，建议改为「停用」", ErrInUse)
 		}
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM warehouses WHERE id=?`, id)
-	return wrapErr(err, "delete warehouse")
+	res, err := s.db.ExecContext(ctx, `DELETE FROM warehouses WHERE id=?`, id)
+	if err != nil {
+		return wrapErr(err, "delete warehouse")
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -727,13 +852,26 @@ func (s *Store) SaveAccount(ctx context.Context, id int64, in AccountInput) (int
 			}
 		}
 		if id > 0 {
-			// 期初余额允许修改
-			_, err := tx.ExecContext(ctx,
+			if in.Code == "" {
+				code, err := existingCode(ctx, tx, "accounts", id)
+				if err != nil {
+					return err
+				}
+				in.Code = code
+			}
+			// 余额允许调整（用于修正期初或手工调账），但必须显式提交。
+			res, err := tx.ExecContext(ctx,
 				`UPDATE accounts SET code=?, name=?, type=?, balance=?, is_default=?, sort=?,
 				   status=?, remark=?, updated_at=? WHERE id=?`,
 				in.Code, in.Name, in.Type, in.Balance, boolInt(in.IsDefault), in.Sort,
 				normStatus(in.Status), in.Remark, now, id)
-			return wrapErr(err, "update account")
+			if err != nil {
+				return wrapErr(err, "update account")
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return ErrNotFound
+			}
+			return nil
 		}
 		if in.Code == "" {
 			code, err := nextSimpleCode(ctx, tx, "accounts", "ACC", 3)
@@ -767,8 +905,14 @@ func (s *Store) DeleteAccount(ctx context.Context, id int64) error {
 	if n > 0 {
 		return fmt.Errorf("%w: 该账户存在收付款记录，建议改为「停用」", ErrInUse)
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM accounts WHERE id=?`, id)
-	return wrapErr(err, "delete account")
+	res, err := s.db.ExecContext(ctx, `DELETE FROM accounts WHERE id=?`, id)
+	if err != nil {
+		return wrapErr(err, "delete account")
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func boolInt(b bool) int {

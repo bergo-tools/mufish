@@ -94,8 +94,13 @@ func (s *Store) RestoreFrom(ctx context.Context, src string) error {
 	if err := s.db.Close(); err != nil {
 		return err
 	}
-	// 保留一份回滚副本
-	_ = copyFile(s.path, s.path+".before-restore")
+	// 保留一份回滚副本；没有副本就不允许继续恢复。
+	if err := copyFile(s.path, s.path+".before-restore"); err != nil {
+		if reopened, rerr := Open(s.path); rerr == nil {
+			*s = *reopened
+		}
+		return fmt.Errorf("生成恢复前副本失败: %w", err)
+	}
 	if err := copyFile(src, s.path); err != nil {
 		reopened, rerr := Open(s.path)
 		if rerr == nil {
@@ -109,7 +114,18 @@ func (s *Store) RestoreFrom(ctx context.Context, src string) error {
 
 	reopened, err := Open(s.path)
 	if err != nil {
-		return fmt.Errorf("恢复后重新打开数据库失败: %w", err)
+		// 恢复文件不可用时回滚到恢复前副本，避免服务停留在“数据库已关闭”的状态。
+		_ = removeIfExists(s.path + "-wal")
+		_ = removeIfExists(s.path + "-shm")
+		if rbErr := copyFile(s.path+".before-restore", s.path); rbErr != nil {
+			return fmt.Errorf("恢复后重新打开数据库失败: %w；回滚也失败: %v", err, rbErr)
+		}
+		if r, rerr := Open(s.path); rerr != nil {
+			return fmt.Errorf("恢复后重新打开数据库失败: %w；回滚后仍无法打开: %v", err, rerr)
+		} else {
+			*s = *r
+		}
+		return fmt.Errorf("恢复后重新打开数据库失败，已回滚到恢复前数据: %w", err)
 	}
 	*s = *reopened
 	return nil
@@ -256,6 +272,7 @@ func queryRow[T any](ctx context.Context, db execer, sqlStr string, args ...any)
 
 type execer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 

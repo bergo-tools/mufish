@@ -280,6 +280,7 @@ CREATE TABLE IF NOT EXISTS stock_moves (
     biz_type      TEXT    NOT NULL DEFAULT '',
     biz_id        INTEGER NOT NULL DEFAULT 0,
     biz_no        TEXT    NOT NULL DEFAULT '',
+    biz_date      TEXT    NOT NULL DEFAULT '',
     direction     INTEGER NOT NULL DEFAULT 1,
     qty           REAL    NOT NULL DEFAULT 0,
     price         INTEGER NOT NULL DEFAULT 0,
@@ -292,6 +293,7 @@ CREATE TABLE IF NOT EXISTS stock_moves (
 );
 CREATE INDEX IF NOT EXISTS idx_moves_wh_product ON stock_moves(warehouse_id, product_id, id);
 CREATE INDEX IF NOT EXISTS idx_moves_created ON stock_moves(created_at);
+CREATE INDEX IF NOT EXISTS idx_moves_biz_date ON stock_moves(biz_date);
 CREATE INDEX IF NOT EXISTS idx_moves_biz ON stock_moves(biz_type, biz_id);
 
 CREATE TABLE IF NOT EXISTS stock_takes (

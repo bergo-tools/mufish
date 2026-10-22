@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"mufish/internal/model"
 	"mufish/internal/store"
 )
 
@@ -65,31 +66,37 @@ func (h *Handler) stockLedger(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (h *Handler) exportLedger(w http.ResponseWriter, r *http.Request) error {
-	page, err := h.st.ListStockMoves(r.Context(), store.StockLedgerQuery{
+	q := store.StockLedgerQuery{
 		Keyword:     qs(r, "keyword"),
 		WarehouseID: qi64(r, "warehouse_id", 0),
 		ProductID:   qi64(r, "product_id", 0),
 		BizType:     qs(r, "biz_type"),
 		From:        qs(r, "from"),
 		To:          qs(r, "to"),
-		Page:        1,
 		Size:        500,
-	})
-	if err != nil {
-		return err
 	}
-	rows := [][]string{{"时间", "仓库", "商品编码", "商品名称", "规格", "单位", "业务类型", "单据编号",
+	rows := [][]string{{"业务日期", "记账时间", "仓库", "商品编码", "商品名称", "规格", "单位", "业务类型", "单据编号",
 		"方向", "数量", "单价", "金额", "结存数量", "操作人", "备注"}}
-	for _, m := range page.List {
-		dir := "入库"
-		if m.Direction < 0 {
-			dir = "出库"
+	for pageNo := 1; ; pageNo++ {
+		q.Page = pageNo
+		page, err := h.st.ListStockMoves(r.Context(), q)
+		if err != nil {
+			return err
 		}
-		rows = append(rows, []string{
-			m.CreatedAt, m.WarehouseName, m.ProductCode, m.ProductName, m.Spec, m.Unit,
-			modelBizType(m.BizType), m.BizNo, dir, m.Qty.String(), m.Price.String(),
-			m.Amount.String(), m.BalanceAfter.String(), m.CreatedByName, m.Remark,
-		})
+		for _, m := range page.List {
+			dir := "入库"
+			if m.Direction < 0 {
+				dir = "出库"
+			}
+			rows = append(rows, []string{
+				m.BizDate, m.CreatedAt, m.WarehouseName, m.ProductCode, m.ProductName, m.Spec, m.Unit,
+				model.BizTypeText(m.BizType), m.BizNo, dir, m.Qty.String(), m.Price.String(),
+				m.Amount.String(), m.BalanceAfter.String(), m.CreatedByName, m.Remark,
+			})
+		}
+		if len(page.List) < q.Size || int64(pageNo*q.Size) >= page.Total {
+			break
+		}
 	}
 	writeCSV(w, "库存流水", rows)
 	return nil
@@ -292,22 +299,4 @@ func (h *Handler) deleteTransfer(w http.ResponseWriter, r *http.Request) error {
 	h.st.AddLog(r.Context(), user(r).ID, user(r).Username, "库存调拨", "删除", fmt.Sprintf("#%d", id), clientIP(r))
 	writeOK(w, nil)
 	return nil
-}
-
-func modelBizType(t string) string {
-	switch t {
-	case "purchase":
-		return "采购入库"
-	case "sales":
-		return "销售出库"
-	case "take":
-		return "库存盘点"
-	case "transfer_in":
-		return "调拨入库"
-	case "transfer_out":
-		return "调拨出库"
-	case "init":
-		return "期初库存"
-	}
-	return t
 }

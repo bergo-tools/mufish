@@ -152,10 +152,6 @@ func (s *Store) DeleteUser(ctx context.Context, id int64) error {
 	if u.IsSuper {
 		return fmt.Errorf("%w: 内置超级管理员不可删除", ErrBadRequest)
 	}
-	var cnt int64
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE is_super=1`).Scan(&cnt); err != nil {
-		return err
-	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id=?`, id); err != nil {
 		return err
 	}

@@ -25,7 +25,6 @@ type ctxKey int
 const (
 	ctxUser ctxKey = iota
 	ctxPerms
-	ctxToken
 )
 
 // Handler 聚合所有 HTTP 处理逻辑。

@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { Api } from '../api.js';
 import { notifyError, notifyOK } from '../store.js';
-import { BIZ_TYPE_TEXT, fmtDateTime, fmtQty, daysAgo, today } from '../format.js';
+import { BIZ_TYPE_TEXT, fmtDate, fmtDateTime, fmtQty, daysAgo, today } from '../format.js';
 import {
   Button,
   Card,
@@ -173,7 +173,8 @@ export default function LedgerPage({ route }) {
           loading={loading}
           empty="没有符合条件的流水记录"
           columns={[
-            { title: '时间', width: 160, render: (r) => fmtDateTime(r.created_at) },
+            { title: '业务日期', width: 110, render: (r) => fmtDate(r.biz_date) },
+            { title: '记账时间', width: 160, render: (r) => fmtDateTime(r.created_at) },
             { title: '仓库', key: 'warehouse_name', width: 110 },
             {
               title: '商品',

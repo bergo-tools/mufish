@@ -26,6 +26,10 @@ type StockQuery struct {
 
 // ListStocks 分页查询库存余额。
 func (s *Store) ListStocks(ctx context.Context, q StockQuery) (model.Page[model.Stock], error) {
+	// 低库存视图与预警使用同一套查询，保证零库存商品的口径一致。
+	if q.OnlyLow {
+		return s.lowStockPage(ctx, q)
+	}
 	var out model.Page[model.Stock]
 	where := []string{"1=1"}
 	args := []any{}
@@ -39,8 +43,9 @@ func (s *Store) ListStocks(ctx context.Context, q StockQuery) (model.Page[model.
 		args = append(args, q.WarehouseID)
 	}
 	if q.CategoryID > 0 {
-		where = append(where, "(p.category_id=? OR p.category_id IN (SELECT id FROM categories WHERE parent_id=?))")
-		args = append(args, q.CategoryID, q.CategoryID)
+		cond, cargs := categoryTreeCond("p.category_id", q.CategoryID)
+		where = append(where, cond)
+		args = append(args, cargs...)
 	}
 	if q.OnlyStock {
 		where = append(where, "st.qty <> 0")
@@ -108,12 +113,12 @@ func (s *Store) ListStockMoves(ctx context.Context, q StockLedgerQuery) (model.P
 		args = append(args, q.BizType)
 	}
 	if q.From != "" {
-		where = append(where, "m.created_at >= ?")
-		args = append(args, q.From+" 00:00:00")
+		where = append(where, "m.biz_date >= ?")
+		args = append(args, q.From)
 	}
 	if q.To != "" {
-		where = append(where, "m.created_at <= ?")
-		args = append(args, q.To+" 23:59:59")
+		where = append(where, "m.biz_date <= ?")
+		args = append(args, q.To)
 	}
 	cond := strings.Join(where, " AND ")
 
@@ -129,7 +134,7 @@ func (s *Store) ListStockMoves(ctx context.Context, q StockLedgerQuery) (model.P
 	args2 := append(append([]any{}, args...), size, (page-1)*size)
 	list, err := query[model.StockMove](ctx, s.db,
 		`SELECT m.id, m.warehouse_id, w.name AS warehouse_name, m.product_id, p.code AS product_code,
-		   p.name AS product_name, p.spec, p.unit, m.biz_type, m.biz_id, m.biz_no, m.direction,
+		   p.name AS product_name, p.spec, p.unit, m.biz_type, m.biz_id, m.biz_no, m.biz_date, m.direction,
 		   m.qty, m.price, m.amount, m.balance_after, m.remark, m.created_by, m.created_by_name, m.created_at `+
 			base+` ORDER BY m.id DESC LIMIT ? OFFSET ?`, args2...)
 	if err != nil {
@@ -138,27 +143,103 @@ func (s *Store) ListStockMoves(ctx context.Context, q StockLedgerQuery) (model.P
 	return model.Page[model.StockMove]{List: list, Total: total, Page: page, Size: size}, nil
 }
 
-// LowStockList 库存预警列表。
+// LowStockList 库存预警列表，与 ListStocks(OnlyLow) 使用同一口径。
 func (s *Store) LowStockList(ctx context.Context, warehouseID int64, limit int) ([]model.Stock, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	args := []any{}
-	cond := "p.safety_stock > 0 AND p.status=1"
-	if warehouseID > 0 {
-		cond += " AND st.warehouse_id=?"
-		args = append(args, warehouseID)
+	page, err := s.lowStockPage(ctx, StockQuery{
+		WarehouseID: warehouseID,
+		OnlyLow:     true,
+		Page:        1,
+		Size:        limit,
+	})
+	if err != nil {
+		return nil, err
 	}
-	args = append(args, limit)
-	return query[model.Stock](ctx, s.db,
-		`SELECT st.id, st.warehouse_id, w.name AS warehouse_name, st.product_id, p.code AS product_code,
-		   p.name AS product_name, p.spec, p.unit, '' AS category_name,
-		   st.qty, st.cost_price, st.amount, p.safety_stock, st.updated_at
-		 FROM stocks st
-		 JOIN products p ON p.id=st.product_id
-		 JOIN warehouses w ON w.id=st.warehouse_id
-		 WHERE `+cond+` AND st.qty < p.safety_stock
-		 ORDER BY (p.safety_stock - st.qty) DESC LIMIT ?`, args...)
+	return page.List, nil
+}
+
+// lowStockPage 统一低库存查询：未指定仓库时按全部仓库汇总，指定仓库时按该仓结存。
+// 没有 stocks 记录的商品按 0 结存处理，因此也会进入预警。
+func (s *Store) lowStockPage(ctx context.Context, q StockQuery) (model.Page[model.Stock], error) {
+	var out model.Page[model.Stock]
+	page, size := normPage(q.Page, q.Size)
+
+	where := []string{"p.status=1", "p.safety_stock>0"}
+	args := []any{}
+	if kw := strings.TrimSpace(q.Keyword); kw != "" {
+		where = append(where, "(p.code LIKE ? OR p.name LIKE ? OR p.spec LIKE ? OR p.barcode LIKE ?)")
+		like := "%" + kw + "%"
+		args = append(args, like, like, like, like)
+	}
+	if q.CategoryID > 0 {
+		cond, cargs := categoryTreeCond("p.category_id", q.CategoryID)
+		where = append(where, cond)
+		args = append(args, cargs...)
+	}
+	baseCond := strings.Join(where, " AND ")
+
+	if q.WarehouseID > 0 {
+		lowCond := baseCond + " AND COALESCE(st.qty,0) < p.safety_stock"
+		if q.OnlyStock {
+			lowCond += " AND COALESCE(st.qty,0) <> 0"
+		}
+		from := ` FROM products p
+			LEFT JOIN stocks st ON st.product_id=p.id AND st.warehouse_id=?
+			LEFT JOIN warehouses w ON w.id=?
+			WHERE ` + lowCond
+		countArgs := append([]any{q.WarehouseID, q.WarehouseID}, args...)
+		total, err := countOf(ctx, s.db, `SELECT COUNT(*)`+from, countArgs...)
+		if err != nil {
+			return out, err
+		}
+		listArgs := append([]any{q.WarehouseID, q.WarehouseID, q.WarehouseID}, args...)
+		listArgs = append(listArgs, size, (page-1)*size)
+		list, err := query[model.Stock](ctx, s.db,
+			`SELECT p.id AS id, ? AS warehouse_id, COALESCE(w.name,'') AS warehouse_name,
+			   p.id AS product_id, p.code AS product_code, p.name AS product_name,
+			   p.spec, p.unit, '' AS category_name,
+			   COALESCE(st.qty,0) AS qty,
+			   COALESCE(st.cost_price, p.purchase_price) AS cost_price,
+			   COALESCE(st.amount,0) AS amount, p.safety_stock,
+			   COALESCE(st.updated_at,'') AS updated_at`+from+
+				` ORDER BY (p.safety_stock - COALESCE(st.qty,0)) DESC, p.code LIMIT ? OFFSET ?`, listArgs...)
+		if err != nil {
+			return out, err
+		}
+		return model.Page[model.Stock]{List: list, Total: total, Page: page, Size: size}, nil
+	}
+
+	having := ` HAVING COALESCE(SUM(st.qty),0) < p.safety_stock`
+	if q.OnlyStock {
+		having += ` AND COALESCE(SUM(st.qty),0) <> 0`
+	}
+	from := ` FROM products p
+		LEFT JOIN stocks st ON st.product_id=p.id
+		WHERE ` + baseCond + `
+		GROUP BY p.id, p.code, p.name, p.spec, p.unit, p.safety_stock, p.purchase_price` + having
+	total, err := countOf(ctx, s.db, `SELECT COUNT(*) FROM (SELECT p.id`+from+`)`, args...)
+	if err != nil {
+		return out, err
+	}
+	listArgs := append([]any{}, args...)
+	listArgs = append(listArgs, size, (page-1)*size)
+	list, err := query[model.Stock](ctx, s.db,
+		`SELECT p.id AS id, 0 AS warehouse_id, '全部仓库' AS warehouse_name,
+		   p.id AS product_id, p.code AS product_code, p.name AS product_name,
+		   p.spec, p.unit, '' AS category_name,
+		   COALESCE(SUM(st.qty),0) AS qty,
+		   CASE WHEN COALESCE(SUM(st.qty),0) <> 0
+		     THEN CAST(ROUND(SUM(st.amount) * 100.0 / SUM(st.qty)) AS INTEGER)
+		     ELSE p.purchase_price END AS cost_price,
+		   COALESCE(SUM(st.amount),0) AS amount, p.safety_stock,
+		   COALESCE(MAX(st.updated_at),'') AS updated_at`+from+
+			` ORDER BY (p.safety_stock - COALESCE(SUM(st.qty),0)) DESC, p.code LIMIT ? OFFSET ?`, listArgs...)
+	if err != nil {
+		return out, err
+	}
+	return model.Page[model.Stock]{List: list, Total: total, Page: page, Size: size}, nil
 }
 
 // ProductStockByWarehouse 查询某商品在各仓库的库存。
@@ -271,6 +352,19 @@ func (s *Store) SaveStockTake(ctx context.Context, id int64, in StockTakeInput, 
 	if len(in.Items) == 0 {
 		return 0, fmt.Errorf("%w: 请至少录入一行盘点明细", ErrBadRequest)
 	}
+	seen := make(map[int64]bool, len(in.Items))
+	for i, it := range in.Items {
+		if it.ProductID == 0 {
+			return 0, fmt.Errorf("%w: 第 %d 行未选择商品", ErrBadRequest, i+1)
+		}
+		if it.RealQty < 0 {
+			return 0, fmt.Errorf("%w: 第 %d 行实盘数量不能为负数", ErrBadRequest, i+1)
+		}
+		if seen[it.ProductID] {
+			return 0, fmt.Errorf("%w: 第 %d 行商品重复，盘点单中同一商品只能出现一次", ErrBadRequest, i+1)
+		}
+		seen[it.ProductID] = true
+	}
 	in.TakeDate = model.NormDate(in.TakeDate)
 	now := model.Now()
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
@@ -374,6 +468,21 @@ func (s *Store) FinishStockTake(ctx context.Context, id int64, user OpUser) erro
 		if err != nil {
 			return err
 		}
+		// 盘点保存后库存可能已经发生变化（例如又发生了出入库）。
+		// 此时直接按旧差异调整会算错，必须先提示重新盘点。
+		for _, it := range items {
+			var current float64
+			err := tx.QueryRowContext(ctx,
+				`SELECT qty FROM stocks WHERE warehouse_id=? AND product_id=?`,
+				o.WarehouseID, it.ProductID).Scan(&current)
+			if err != nil && err != sql.ErrNoRows {
+				return err
+			}
+			if round4(current) != round4(it.BookQty.Float()) {
+				return fmt.Errorf("%w: 商品 %s（%s）的库存已变化（盘点时账面 %s，当前 %s），请重新盘点",
+					ErrBadRequest, it.ProductName, it.ProductCode, it.BookQty, model.Qty(current))
+			}
+		}
 		for _, it := range items {
 			if it.DiffQty == 0 {
 				continue
@@ -386,6 +495,7 @@ func (s *Store) FinishStockTake(ctx context.Context, id int64, user OpUser) erro
 				BizType:     "take",
 				BizID:       o.ID,
 				BizNo:       o.TakeNo,
+				BizDate:     o.TakeDate,
 				Remark:      "盘点调整",
 				User:        user,
 			}); err != nil {
@@ -642,6 +752,7 @@ func (s *Store) ConfirmTransfer(ctx context.Context, id int64, user OpUser) erro
 		if err != nil {
 			return err
 		}
+		var totalAmount model.Money
 		for _, it := range items {
 			out, err := applyStock(ctx, tx, stockMoveReq{
 				WarehouseID: o.FromWarehouseID,
@@ -650,6 +761,7 @@ func (s *Store) ConfirmTransfer(ctx context.Context, id int64, user OpUser) erro
 				BizType:     "transfer_out",
 				BizID:       o.ID,
 				BizNo:       o.TransferNo,
+				BizDate:     o.TransferDate,
 				Remark:      "调拨至 " + o.ToName,
 				User:        user,
 				Strict:      strict,
@@ -665,6 +777,7 @@ func (s *Store) ConfirmTransfer(ctx context.Context, id int64, user OpUser) erro
 				BizType:     "transfer_in",
 				BizID:       o.ID,
 				BizNo:       o.TransferNo,
+				BizDate:     o.TransferDate,
 				Remark:      "调拨自 " + o.FromName,
 				User:        user,
 			}); err != nil {
@@ -674,9 +787,11 @@ func (s *Store) ConfirmTransfer(ctx context.Context, id int64, user OpUser) erro
 				`UPDATE transfer_items SET price=? WHERE id=?`, out.CostPrice, it.ID); err != nil {
 				return err
 			}
+			totalAmount += out.Amount
 		}
 		_, err = tx.ExecContext(ctx,
-			`UPDATE transfers SET status=1, confirmed_at=? WHERE id=?`, model.Now(), id)
+			`UPDATE transfers SET status=1, total_amount=?, confirmed_at=? WHERE id=?`,
+			totalAmount, model.Now(), id)
 		return err
 	})
 }

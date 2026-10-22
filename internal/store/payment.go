@@ -135,15 +135,40 @@ func (s *Store) SavePayment(ctx context.Context, id int64, in PaymentInput, user
 		orderNo := ""
 		switch in.OrderType {
 		case "purchase":
-			orderNo, err = loadPurchaseNo(ctx, tx, in.OrderID)
+			if in.OrderID == 0 {
+				in.OrderType = ""
+				break
+			}
+			if in.Type != model.PayTypePayment {
+				return fmt.Errorf("%w: 只有付款单才能关联采购单", ErrBadRequest)
+			}
+			var supplierID int64
+			orderNo, supplierID, err = loadPurchaseRef(ctx, tx, in.OrderID)
+			if err != nil {
+				return err
+			}
+			if supplierID != in.PartnerID {
+				return fmt.Errorf("%w: 付款单位与采购单供应商不一致", ErrBadRequest)
+			}
 		case "sales":
-			orderNo, err = loadSalesNo(ctx, tx, in.OrderID)
+			if in.OrderID == 0 {
+				in.OrderType = ""
+				break
+			}
+			if in.Type != model.PayTypeReceipt {
+				return fmt.Errorf("%w: 只有收款单才能关联销售单", ErrBadRequest)
+			}
+			var customerID int64
+			orderNo, customerID, err = loadSalesRef(ctx, tx, in.OrderID)
+			if err != nil {
+				return err
+			}
+			if customerID != in.PartnerID {
+				return fmt.Errorf("%w: 收款单位与销售单客户不一致", ErrBadRequest)
+			}
 		default:
 			in.OrderType = ""
 			in.OrderID = 0
-		}
-		if err != nil {
-			return err
 		}
 
 		if id > 0 {
@@ -206,6 +231,57 @@ func (s *Store) ConfirmPayment(ctx context.Context, id int64, user OpUser) error
 		}
 		if p.Status == model.DocVoided {
 			return fmt.Errorf("%w: 该单据已作废", ErrBadRequest)
+		}
+
+		// 关联单据校验：类型、状态和往来单位必须匹配，避免旧数据绕过保存时的校验。
+		if p.OrderType != "" {
+			if p.OrderID == 0 {
+				return fmt.Errorf("%w: 关联单据无效", ErrBadRequest)
+			}
+			switch p.OrderType {
+			case "sales":
+				if p.Type != model.PayTypeReceipt {
+					return fmt.Errorf("%w: 只有收款单才能关联销售单", ErrBadRequest)
+				}
+				var customerID int64
+				var status int
+				if err := tx.QueryRowContext(ctx,
+					`SELECT customer_id, status FROM sales_orders WHERE id=?`, p.OrderID).
+					Scan(&customerID, &status); err != nil {
+					if err == sql.ErrNoRows {
+						return fmt.Errorf("%w: 关联的销售单不存在", ErrBadRequest)
+					}
+					return err
+				}
+				if status != model.DocConfirmed {
+					return fmt.Errorf("%w: 关联的销售单必须是「已出库」状态", ErrBadRequest)
+				}
+				if customerID != p.PartnerID {
+					return fmt.Errorf("%w: 收款单位与销售单客户不一致", ErrBadRequest)
+				}
+			case "purchase":
+				if p.Type != model.PayTypePayment {
+					return fmt.Errorf("%w: 只有付款单才能关联采购单", ErrBadRequest)
+				}
+				var supplierID int64
+				var status int
+				if err := tx.QueryRowContext(ctx,
+					`SELECT supplier_id, status FROM purchase_orders WHERE id=?`, p.OrderID).
+					Scan(&supplierID, &status); err != nil {
+					if err == sql.ErrNoRows {
+						return fmt.Errorf("%w: 关联的采购单不存在", ErrBadRequest)
+					}
+					return err
+				}
+				if status != model.DocConfirmed {
+					return fmt.Errorf("%w: 关联的采购单必须是「已入库」状态", ErrBadRequest)
+				}
+				if supplierID != p.PartnerID {
+					return fmt.Errorf("%w: 付款单位与采购单供应商不一致", ErrBadRequest)
+				}
+			default:
+				return fmt.Errorf("%w: 关联单据类型有误", ErrBadRequest)
+			}
 		}
 
 		// 关联单据金额校验
@@ -365,40 +441,42 @@ type unpaidRow struct {
 	Balance      model.Money `db:"balance"`
 }
 
-func loadPurchaseNo(ctx context.Context, tx *sql.Tx, id int64) (string, error) {
-	if id == 0 {
-		return "", nil
-	}
+// loadPurchaseRef 读取采购单编号与供应商，只允许已入库单据被付款单关联。
+func loadPurchaseRef(ctx context.Context, tx *sql.Tx, id int64) (string, int64, error) {
 	var no string
 	var status int
-	err := tx.QueryRowContext(ctx, `SELECT order_no, status FROM purchase_orders WHERE id=?`, id).Scan(&no, &status)
+	var supplierID int64
+	err := tx.QueryRowContext(ctx,
+		`SELECT order_no, status, supplier_id FROM purchase_orders WHERE id=?`, id).
+		Scan(&no, &status, &supplierID)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("%w: 关联的采购单不存在", ErrBadRequest)
+		return "", 0, fmt.Errorf("%w: 关联的采购单不存在", ErrBadRequest)
 	}
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if status != model.DocConfirmed {
-		return "", fmt.Errorf("%w: 关联的采购单必须是「已入库」状态", ErrBadRequest)
+		return "", 0, fmt.Errorf("%w: 关联的采购单必须是「已入库」状态", ErrBadRequest)
 	}
-	return no, nil
+	return no, supplierID, nil
 }
 
-func loadSalesNo(ctx context.Context, tx *sql.Tx, id int64) (string, error) {
-	if id == 0 {
-		return "", nil
-	}
+// loadSalesRef 读取销售单编号与客户，只允许已出库单据被收款单关联。
+func loadSalesRef(ctx context.Context, tx *sql.Tx, id int64) (string, int64, error) {
 	var no string
 	var status int
-	err := tx.QueryRowContext(ctx, `SELECT order_no, status FROM sales_orders WHERE id=?`, id).Scan(&no, &status)
+	var customerID int64
+	err := tx.QueryRowContext(ctx,
+		`SELECT order_no, status, customer_id FROM sales_orders WHERE id=?`, id).
+		Scan(&no, &status, &customerID)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("%w: 关联的销售单不存在", ErrBadRequest)
+		return "", 0, fmt.Errorf("%w: 关联的销售单不存在", ErrBadRequest)
 	}
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if status != model.DocConfirmed {
-		return "", fmt.Errorf("%w: 关联的销售单必须是「已出库」状态", ErrBadRequest)
+		return "", 0, fmt.Errorf("%w: 关联的销售单必须是「已出库」状态", ErrBadRequest)
 	}
-	return no, nil
+	return no, customerID, nil
 }
