@@ -447,6 +447,7 @@ export default function PaymentsPage({ route }) {
             value={keyword}
             onInput={setKeyword}
             onSearch={() => list.setFilters({ keyword })}
+            onClear={() => list.setFilters({ keyword: '' })}
             placeholder="单据号 / 往来单位 / 关联单据"
             width={240}
           />
@@ -490,6 +491,8 @@ export default function PaymentsPage({ route }) {
           width={720}
           title={form.id ? '编辑收付款单' : '新建收付款单'}
           onClose={closeForm}
+          closeOnMask={false}
+          closeOnEsc={false}
           footer={
             <>
               <Button onClick={closeForm}>取消</Button>

@@ -88,6 +88,7 @@ test('商品 → 采购入库 → 销售出库 → 库存流水', async ({ page 
   const saleProduct = saleModal.locator('.doc-items-table select').first();
   await expect(saleProduct.locator('option').filter({ hasText: code })).toHaveCount(1);
   await saleProduct.selectOption({ label: code + ' ' + name });
+  await expect(saleModal).toContainText('可用 10');
   await saleModal.locator('.doc-items-table input[type="number"]').nth(0).fill('4');
   await saleModal.locator('.doc-items-table input[type="number"]').nth(1).fill('20');
   await saleModal.getByRole('button', { name: '保存' }).click();

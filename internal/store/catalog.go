@@ -226,6 +226,24 @@ func (s *Store) AllProducts(ctx context.Context, keyword string) ([]model.Produc
 		 WHERE `+cond+` ORDER BY p.code LIMIT 300`, args...)
 }
 
+// AllProductsForWarehouse 查询全部启用商品，并带出指定仓库的结存数量。
+// 销售开单需要在下拉/明细中显示“当前仓库可用库存”。
+func (s *Store) AllProductsForWarehouse(ctx context.Context, keyword string, warehouseID int64) ([]model.Product, error) {
+	args := []any{warehouseID}
+	cond := "p.status=1"
+	if kw := strings.TrimSpace(keyword); kw != "" {
+		cond += " AND (p.code LIKE ? OR p.name LIKE ? OR p.barcode LIKE ?)"
+		like := "%" + kw + "%"
+		args = append(args, like, like, like)
+	}
+	return query[model.Product](ctx, s.db,
+		`SELECT `+productCols+`,
+		   COALESCE((SELECT SUM(s.qty) FROM stocks s
+		             WHERE s.product_id=p.id AND s.warehouse_id=?),0) AS stock_qty
+		 FROM products p LEFT JOIN categories c ON c.id=p.category_id
+		 WHERE `+cond+` ORDER BY p.code LIMIT 300`, args...)
+}
+
 // GetProduct 按 ID 获取商品。
 func (s *Store) GetProduct(ctx context.Context, id int64) (model.Product, error) {
 	p, ok, err := queryRow[model.Product](ctx, s.db,
@@ -894,11 +912,11 @@ func (s *Store) SaveAccount(ctx context.Context, id int64, in AccountInput) (int
 				}
 				in.Code = code
 			}
-			// 余额允许调整（用于修正期初或手工调账），但必须显式提交。
+			// 余额不允许通过编辑账户直接覆盖，必须走 AdjustAccount 生成调账记录。
 			res, err := tx.ExecContext(ctx,
-				`UPDATE accounts SET code=?, name=?, type=?, balance=?, is_default=?, sort=?,
+				`UPDATE accounts SET code=?, name=?, type=?, is_default=?, sort=?,
 				   status=?, remark=?, updated_at=? WHERE id=?`,
-				in.Code, in.Name, in.Type, in.Balance, boolInt(in.IsDefault), in.Sort,
+				in.Code, in.Name, in.Type, boolInt(in.IsDefault), in.Sort,
 				normStatus(in.Status), in.Remark, now, id)
 			if err != nil {
 				return wrapErr(err, "update account")
@@ -931,6 +949,77 @@ func (s *Store) SaveAccount(ctx context.Context, id int64, in AccountInput) (int
 	return id, nil
 }
 
+// AdjustAccount 调整账户余额，并写入一条独立调账记录。
+// 账户余额不能在编辑账户时直接覆盖，所有余额变化都必须经过这里。
+func (s *Store) AdjustAccount(ctx context.Context, id int64, balance model.Money, reason string, user OpUser) (model.AccountAdjustment, error) {
+	var adj model.AccountAdjustment
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return adj, fmt.Errorf("%w: 请填写调账原因", ErrBadRequest)
+	}
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		var name string
+		var before int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT name, balance FROM accounts WHERE id=?`, id).Scan(&name, &before); err != nil {
+			if err == sql.ErrNoRows {
+				return ErrNotFound
+			}
+			return err
+		}
+		if int64(balance) == before {
+			return fmt.Errorf("%w: 调整后余额与当前余额相同", ErrBadRequest)
+		}
+		now := model.Now()
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE accounts SET balance=?, updated_at=? WHERE id=?`, balance, now, id); err != nil {
+			return wrapErr(err, "adjust account balance")
+		}
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO account_adjustments(account_id, account_name, before_balance, after_balance,
+			   amount, reason, created_by, created_by_name, created_at)
+			 VALUES(?,?,?,?,?,?,?,?,?)`,
+			id, name, before, int64(balance), int64(balance)-before, reason,
+			user.ID, user.Name, now)
+		if err != nil {
+			return wrapErr(err, "insert account adjustment")
+		}
+		adjID, _ := res.LastInsertId()
+		adj = model.AccountAdjustment{
+			ID:            adjID,
+			AccountID:     id,
+			AccountName:   name,
+			BeforeBalance: model.Money(before),
+			AfterBalance:  balance,
+			Amount:        model.Money(int64(balance) - before),
+			Reason:        reason,
+			CreatedBy:     user.ID,
+			CreatedByName: user.Name,
+			CreatedAt:     now,
+		}
+		return nil
+	})
+	return adj, err
+}
+
+// ListAccountAdjustments 查询调账记录；accountID 为 0 时返回全部。
+func (s *Store) ListAccountAdjustments(ctx context.Context, accountID int64, limit int) ([]model.AccountAdjustment, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	where := "1=1"
+	args := []any{}
+	if accountID > 0 {
+		where = "a.account_id=?"
+		args = append(args, accountID)
+	}
+	args = append(args, limit)
+	return query[model.AccountAdjustment](ctx, s.db,
+		`SELECT a.id, a.account_id, a.account_name, a.before_balance, a.after_balance,
+		   a.amount, a.reason, a.created_by, a.created_by_name, a.created_at
+		 FROM account_adjustments a WHERE `+where+` ORDER BY a.id DESC LIMIT ?`, args...)
+}
+
 // DeleteAccount 删除账户。
 func (s *Store) DeleteAccount(ctx context.Context, id int64) error {
 	var balance int64
@@ -949,6 +1038,13 @@ func (s *Store) DeleteAccount(ctx context.Context, id int64) error {
 	}
 	if n > 0 {
 		return fmt.Errorf("%w: 该账户存在收付款记录，建议改为「停用」", ErrInUse)
+	}
+	var adjustments int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM account_adjustments WHERE account_id=?`, id).Scan(&adjustments); err != nil {
+		return err
+	}
+	if adjustments > 0 {
+		return fmt.Errorf("%w: 该账户存在调账记录，建议改为「停用」", ErrInUse)
 	}
 	res, err := s.db.ExecContext(ctx, `DELETE FROM accounts WHERE id=?`, id)
 	if err != nil {

@@ -215,6 +215,8 @@ export default function WarehousesPage({ route }) {
         open={formOpen}
         title={editing ? '编辑仓库' : '新增仓库'}
         onClose={() => setFormOpen(false)}
+        closeOnMask={false}
+        closeOnEsc={false}
         width={640}
         footer={
           <>

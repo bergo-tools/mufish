@@ -253,6 +253,8 @@ export default function PartnersPage({ route }) {
         open={formOpen}
         title={editing ? '编辑往来单位' : '新增往来单位'}
         onClose={() => setFormOpen(false)}
+        closeOnMask={false}
+        closeOnEsc={false}
         width={760}
         footer={
           <>

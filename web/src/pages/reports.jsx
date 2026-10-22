@@ -432,6 +432,10 @@ export default function ReportsPage() {
               value={keywordInput}
               onInput={setKeywordInput}
               onSearch={() => setKeyword(keywordInput.trim())}
+              onClear={() => {
+                setKeywordInput('');
+                setKeyword('');
+              }}
               placeholder="商品 / 单位 / 单据号"
               width={220}
             />

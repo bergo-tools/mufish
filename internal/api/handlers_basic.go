@@ -270,7 +270,17 @@ func (h *Handler) listProducts(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (h *Handler) productOptions(w http.ResponseWriter, r *http.Request) error {
-	list, err := h.st.AllProducts(r.Context(), qs(r, "keyword"))
+	keyword := qs(r, "keyword")
+	warehouseID := qi64(r, "warehouse_id", 0)
+	var (
+		list []model.Product
+		err  error
+	)
+	if warehouseID > 0 {
+		list, err = h.st.AllProductsForWarehouse(r.Context(), keyword, warehouseID)
+	} else {
+		list, err = h.st.AllProducts(r.Context(), keyword)
+	}
 	if err != nil {
 		return err
 	}
@@ -657,13 +667,9 @@ func (h *Handler) saveAccount(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	id := int64(0)
-	var before model.Account
 	if r.Method == http.MethodPut {
 		var err error
 		if id, err = pathID(r); err != nil {
-			return err
-		}
-		if before, err = h.st.GetAccount(r.Context(), id); err != nil {
 			return err
 		}
 	}
@@ -671,12 +677,51 @@ func (h *Handler) saveAccount(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	detail := in.Name
-	if id > 0 && before.Balance != in.Balance {
-		detail += fmt.Sprintf("；余额 %s → %s", before.Balance, in.Balance)
-	}
-	h.st.AddLog(r.Context(), user(r).ID, user(r).Username, "资金账户", actionText(id), detail, clientIP(r))
+	// 余额变化不在这里处理：必须走 adjustAccount 生成独立调账记录。
+	h.st.AddLog(r.Context(), user(r).ID, user(r).Username, "资金账户", actionText(id), in.Name, clientIP(r))
 	writeOK(w, map[string]any{"id": newID})
+	return nil
+}
+
+// adjustAccount 调整账户余额并生成调账记录。
+func (h *Handler) adjustAccount(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r)
+	if err != nil {
+		return err
+	}
+	var in struct {
+		Balance *model.Money `json:"balance"`
+		Reason  string       `json:"reason"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		return err
+	}
+	if in.Balance == nil {
+		return store.NewError(http.StatusBadRequest, "请填写调整后余额")
+	}
+	adj, err := h.st.AdjustAccount(r.Context(), id, *in.Balance, in.Reason, opUser(r))
+	if err != nil {
+		return err
+	}
+	h.st.AddLog(r.Context(), user(r).ID, user(r).Username, "资金账户", "余额调账",
+		fmt.Sprintf("%s：余额 %s → %s（原因：%s）",
+			adj.AccountName, adj.BeforeBalance, adj.AfterBalance, adj.Reason),
+		clientIP(r))
+	writeOK(w, adj)
+	return nil
+}
+
+// listAccountAdjustments 查询某账户的调账记录。
+func (h *Handler) listAccountAdjustments(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r)
+	if err != nil {
+		return err
+	}
+	list, err := h.st.ListAccountAdjustments(r.Context(), id, qi(r, "limit", 100))
+	if err != nil {
+		return err
+	}
+	writeOK(w, list)
 	return nil
 }
 

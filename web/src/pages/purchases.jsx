@@ -427,6 +427,7 @@ export default function PurchasesPage({ route }) {
             value={keyword}
             onInput={setKeyword}
             onSearch={() => setFilters({ keyword: keyword.trim() })}
+            onClear={() => setFilters({ keyword: '' })}
             placeholder="单据号 / 供应商 / 仓库"
             width={230}
           />
@@ -470,6 +471,8 @@ export default function PurchasesPage({ route }) {
           open
           title={editing ? '编辑采购单 ' + editing.order_no : '新建采购单'}
           onClose={closeForm}
+          closeOnMask={false}
+          closeOnEsc={false}
           width={1000}
           bodyClass="no-pad"
           footer={
@@ -639,6 +642,16 @@ export default function PurchasesPage({ route }) {
             {detailData && detailData.status === 0 && can('purchase:update') ? (
               <Button icon="edit" onClick={() => openEdit(detailData)}>
                 编辑
+              </Button>
+            ) : null}
+            {detailData && detailData.status === 0 && can('purchase:confirm') ? (
+              <Button variant="primary" icon="check" onClick={() => doConfirm(detailData)}>
+                确认入库
+              </Button>
+            ) : null}
+            {detailData && detailData.status === 1 && can('purchase:void') ? (
+              <Button variant="danger" icon="ban" onClick={() => doVoid(detailData)}>
+                作废
               </Button>
             ) : null}
             <Button onClick={() => setDetailId(null)}>关闭</Button>

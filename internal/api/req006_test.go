@@ -172,9 +172,13 @@ func TestP1BalanceChangesAreAudited(t *testing.T) {
 		"balance": 100, "status": 1,
 	}, 0))
 	accID := strconv.FormatInt(int64(acc["id"].(float64)), 10)
+	// v0.7.0 起余额只能通过独立调账接口修改；编辑账户提交 balance 不再生效。
 	c.do("PUT", "/accounts/"+accID, map[string]any{
 		"code": "P1-AUDIT-ACC", "name": "审计账户", "type": "cash",
 		"balance": 200, "status": 1,
+	}, 0)
+	c.do("POST", "/accounts/"+accID+"/adjust", map[string]any{
+		"balance": 200, "reason": "审计测试调账",
 	}, 0)
 	logs := decode[map[string]any](t, c.do("GET", "/logs?module=资金账户&keyword=余额&size=10", nil, 0))
 	var accountDetail string

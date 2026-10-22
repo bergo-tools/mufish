@@ -2,7 +2,7 @@
 import { useState } from 'preact/hooks';
 import { Api } from '../api.js';
 import { can, notifyError, notifyOK } from '../store.js';
-import { ACCOUNT_TYPE_TEXT, fmtMoney } from '../format.js';
+import { ACCOUNT_TYPE_TEXT, fmtDateTime, fmtMoney } from '../format.js';
 import {
   Button,
   Card,
@@ -55,6 +55,17 @@ export default function AccountsPage({ route }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
+  // 余额调账弹窗。
+  const [adjustTarget, setAdjustTarget] = useState(null);
+  const [adjustBalance, setAdjustBalance] = useState('');
+  const [adjustReason, setAdjustReason] = useState('');
+  const [adjusting, setAdjusting] = useState(false);
+
+  // 调账记录弹窗。
+  const [historyTarget, setHistoryTarget] = useState(null);
+  const [historyList, setHistoryList] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
   // 资金账户列表。
   const { data, loading, reload } = useAsync(async () => {
     try {
@@ -97,19 +108,18 @@ export default function AccountsPage({ route }) {
     }
     setSaving(true);
     try {
-      await Api.saveAccount(
-        {
-          code: String(form.code || '').trim(),
-          name: String(form.name || '').trim(),
-          type: form.type || 'cash',
-          balance: Number(form.balance || 0),
-          is_default: !!form.is_default,
-          sort: Number(form.sort || 0),
-          status: Number(form.status) === 0 ? 0 : 1,
-          remark: String(form.remark || '').trim(),
-        },
-        editing ? editing.id : undefined,
-      );
+      const payload = {
+        code: String(form.code || '').trim(),
+        name: String(form.name || '').trim(),
+        type: form.type || 'cash',
+        is_default: !!form.is_default,
+        sort: Number(form.sort || 0),
+        status: Number(form.status) === 0 ? 0 : 1,
+        remark: String(form.remark || '').trim(),
+      };
+      // 只有新建账户时可以带期初余额；编辑余额必须走独立调账。
+      if (!editing) payload.balance = Number(form.balance || 0);
+      await Api.saveAccount(payload, editing ? editing.id : undefined);
       notifyOK(editing ? '修改成功' : '新增成功');
       setFormOpen(false);
       reload();
@@ -117,6 +127,68 @@ export default function AccountsPage({ route }) {
       notifyError(e);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const openAdjust = (row) => {
+    setAdjustTarget(row);
+    setAdjustBalance(row.balance === undefined ? '' : String(row.balance));
+    setAdjustReason('');
+  };
+
+  const closeAdjust = () => {
+    setAdjustTarget(null);
+    setAdjustBalance('');
+    setAdjustReason('');
+  };
+
+  const currentBalance = Number(adjustTarget && adjustTarget.balance) || 0;
+  const nextBalance = Number(adjustBalance);
+  const adjustDiff = Number.isFinite(nextBalance) ? nextBalance - currentBalance : 0;
+
+  const submitAdjust = async () => {
+    if (!adjustTarget) return;
+    const raw = String(adjustBalance === null || adjustBalance === undefined ? '' : adjustBalance).trim();
+    if (raw === '') {
+      notifyError(new Error('请输入调整后余额'));
+      return;
+    }
+    const balance = Number(raw);
+    if (!Number.isFinite(balance)) {
+      notifyError(new Error('调整后余额格式不正确'));
+      return;
+    }
+    if (balance === currentBalance) {
+      notifyError(new Error('调整后余额与当前余额相同'));
+      return;
+    }
+    if (!String(adjustReason || '').trim()) {
+      notifyError(new Error('请填写调账原因'));
+      return;
+    }
+    setAdjusting(true);
+    try {
+      await Api.adjustAccount(adjustTarget.id, balance, adjustReason.trim());
+      notifyOK('调账成功');
+      closeAdjust();
+      reload();
+    } catch (e) {
+      notifyError(e);
+    } finally {
+      setAdjusting(false);
+    }
+  };
+
+  const openHistory = async (row) => {
+    setHistoryTarget(row);
+    setHistoryList([]);
+    setHistoryLoading(true);
+    try {
+      setHistoryList((await Api.accountAdjustments(row.id)) || []);
+    } catch (e) {
+      notifyError(e);
+    } finally {
+      setHistoryLoading(false);
     }
   };
 
@@ -164,21 +236,30 @@ export default function AccountsPage({ route }) {
     },
     {
       title: '操作',
-      width: 130,
+      width: 250,
       align: 'center',
-      render: (r) =>
-        can('account:manage') ? (
-          <span class="actions">
-            <Button size="sm" variant="link" onClick={() => openForm(r)}>
-              编辑
+      render: (r) => (
+        <span class="actions">
+          {can('account:manage') ? (
+            <Button size="sm" variant="link" onClick={() => openAdjust(r)}>
+              调账
             </Button>
-            <Button size="sm" variant="link" onClick={() => remove(r)}>
-              删除
-            </Button>
-          </span>
-        ) : (
-          <span class="muted">-</span>
-        ),
+          ) : null}
+          <Button size="sm" variant="link" onClick={() => openHistory(r)}>
+            记录
+          </Button>
+          {can('account:manage') ? (
+            <>
+              <Button size="sm" variant="link" onClick={() => openForm(r)}>
+                编辑
+              </Button>
+              <Button size="sm" variant="link" onClick={() => remove(r)}>
+                删除
+              </Button>
+            </>
+          ) : null}
+        </span>
+      ),
     },
   ];
 
@@ -210,10 +291,13 @@ export default function AccountsPage({ route }) {
         <Table columns={columns} data={list} loading={loading} empty="暂无资金账户" rowKey="id" />
       </Card>
 
+      {/* 新增 / 编辑账户（余额不在编辑时修改） */}
       <Modal
         open={formOpen}
         title={editing ? '编辑账户' : '新增账户'}
         onClose={() => setFormOpen(false)}
+        closeOnMask={false}
+        closeOnEsc={false}
         width={600}
         footer={
           <>
@@ -239,12 +323,15 @@ export default function AccountsPage({ route }) {
               placeholder={null}
             />
           </Field>
-          <Field
-            label="余额"
-            hint={editing ? '直接修改余额不会生成收付款记录，请确认后再保存' : '新建账户的期初余额'}
-          >
-            <NumberInput value={form.balance} onInput={setField('balance')} />
-          </Field>
+          {editing ? (
+            <Field label="当前余额" hint="余额请通过列表中的「调账」修改">
+              <span class="money money-bold">{fmtMoney(form.balance)}</span>
+            </Field>
+          ) : (
+            <Field label="期初余额" hint="新建账户时的期初余额">
+              <NumberInput value={form.balance} onInput={setField('balance')} />
+            </Field>
+          )}
           <Field label="排序">
             <NumberInput value={form.sort} onInput={setField('sort')} placeholder="数字越小越靠前" />
           </Field>
@@ -263,6 +350,78 @@ export default function AccountsPage({ route }) {
             <Textarea value={form.remark} onInput={setField('remark')} rows={2} />
           </Field>
         </div>
+      </Modal>
+
+      {/* 余额调账 */}
+      <Modal
+        open={!!adjustTarget}
+        title="账户余额调账"
+        onClose={closeAdjust}
+        closeOnMask={false}
+        closeOnEsc={false}
+        width={620}
+        footer={
+          <>
+            <Button onClick={closeAdjust}>取消</Button>
+            <Button variant="primary" icon="save" loading={adjusting} onClick={submitAdjust}>
+              确认调账
+            </Button>
+          </>
+        }
+      >
+        <div class="form-grid form-grid-2">
+          <Field label="账户">
+            <span>{adjustTarget ? adjustTarget.name : '-'}</span>
+          </Field>
+          <Field label="当前余额">
+            <Money value={currentBalance} bold />
+          </Field>
+          <Field label="调整后余额" required>
+            <NumberInput
+              value={adjustBalance}
+              onInput={setAdjustBalance}
+              placeholder="请输入调整后余额"
+            />
+          </Field>
+          <Field label="调整差额">
+            <Money value={adjustDiff} colored bold />
+          </Field>
+          <Field label="调账原因" required className="span-2">
+            <Textarea
+              value={adjustReason}
+              onInput={setAdjustReason}
+              rows={3}
+              placeholder="例如：银行手续费、盘点差异、期初余额修正"
+            />
+          </Field>
+        </div>
+        <p class="muted small mt-8">
+          确认后会生成一条独立的调账记录，不会生成收付款单，也不会关联往来单位。账户余额不能在编辑账户时直接覆盖。
+        </p>
+      </Modal>
+
+      {/* 调账记录 */}
+      <Modal
+        open={!!historyTarget}
+        title={`调账记录 - ${historyTarget ? historyTarget.name : ''}`}
+        onClose={() => setHistoryTarget(null)}
+        width={900}
+        footer={<Button onClick={() => setHistoryTarget(null)}>关闭</Button>}
+      >
+        <Table
+          rowKey="id"
+          loading={historyLoading}
+          empty="暂无调账记录"
+          data={historyList}
+          columns={[
+            { title: '时间', width: 165, render: (r) => fmtDateTime(r.created_at) },
+            { title: '调整前', align: 'right', render: (r) => <Money value={r.before_balance} /> },
+            { title: '调整后', align: 'right', render: (r) => <Money value={r.after_balance} /> },
+            { title: '差额', align: 'right', render: (r) => <Money value={r.amount} colored bold /> },
+            { title: '原因', key: 'reason', render: (r) => r.reason || '-' },
+            { title: '操作人', width: 110, render: (r) => r.created_by_name || '-' },
+          ]}
+        />
       </Modal>
     </div>
   );

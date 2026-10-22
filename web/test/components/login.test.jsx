@@ -9,7 +9,7 @@ function setMeta(meta) {
     ready: true,
     user: null,
     permissions: [],
-    meta: { company_name: '测试公司', company_short: '测试', version: '0.6.0', ...meta },
+    meta: { company_name: '测试公司', company_short: '测试', version: '0.7.0', ...meta },
   });
 }
 

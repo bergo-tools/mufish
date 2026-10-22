@@ -104,6 +104,7 @@ export default function LogsPage({ route }) {
               if (!v) applyFilters({ keyword: '' });
             }}
             onSearch={() => applyFilters({ keyword: kw })}
+            onClear={() => applyFilters({ keyword: '' })}
             placeholder="操作人 / 动作 / 详情"
             width={230}
           />

@@ -228,6 +228,7 @@ export default function TransfersPage({ route }) {
     try {
       await Api.confirmTransfer(row.id);
       notifyOK('确认调拨成功');
+      setViewOpen(false);
       reload();
     } catch (e) {
       notifyError(e);
@@ -242,6 +243,7 @@ export default function TransfersPage({ route }) {
     try {
       await Api.voidTransfer(row.id);
       notifyOK('作废成功');
+      setViewOpen(false);
       reload();
     } catch (e) {
       notifyError(e);
@@ -297,6 +299,7 @@ export default function TransfersPage({ route }) {
             value={keyword}
             onInput={setKeyword}
             onSearch={doSearch}
+            onClear={() => setFilters({ keyword: '' })}
             placeholder="调拨单号 / 仓库 / 备注"
             width={200}
           />
@@ -395,6 +398,8 @@ export default function TransfersPage({ route }) {
         title={form.id ? '编辑调拨单' : '新建调拨单'}
         width={900}
         onClose={() => setEditOpen(false)}
+        closeOnMask={false}
+        closeOnEsc={false}
         footer={
           <>
             <Button onClick={() => setEditOpen(false)}>取消</Button>
@@ -534,7 +539,21 @@ export default function TransfersPage({ route }) {
         title="调拨单详情"
         width={900}
         onClose={() => setViewOpen(false)}
-        footer={<Button onClick={() => setViewOpen(false)}>关闭</Button>}
+        footer={
+          <>
+            {viewData && viewData.status === 0 && can('stock:transfer') ? (
+              <Button variant="primary" icon="check" onClick={() => handleConfirm(viewData)}>
+                确认调拨
+              </Button>
+            ) : null}
+            {viewData && viewData.status === 1 && can('stock:transfer') ? (
+              <Button variant="danger" icon="ban" onClick={() => handleVoid(viewData)}>
+                作废
+              </Button>
+            ) : null}
+            <Button onClick={() => setViewOpen(false)}>关闭</Button>
+          </>
+        }
       >
         {viewData ? (
           <>

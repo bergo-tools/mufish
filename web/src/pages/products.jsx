@@ -377,6 +377,8 @@ export default function ProductsPage({ route }) {
         open={formOpen}
         title={editing ? '编辑商品' : '新增商品'}
         onClose={() => setFormOpen(false)}
+        closeOnMask={false}
+        closeOnEsc={false}
         width={720}
         footer={
           <>
@@ -499,6 +501,8 @@ export default function ProductsPage({ route }) {
         open={importOpen}
         title="导入商品"
         onClose={() => setImportOpen(false)}
+        closeOnMask={false}
+        closeOnEsc={false}
         width={640}
         footer={
           <>

@@ -159,6 +159,22 @@ CREATE TABLE IF NOT EXISTS accounts (
     updated_at TEXT    NOT NULL DEFAULT ''
 );
 
+-- 资金账户余额调账记录。余额只能通过“调账”修改，不能直接覆盖。
+CREATE TABLE IF NOT EXISTS account_adjustments (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id      INTEGER NOT NULL,
+    account_name    TEXT    NOT NULL DEFAULT '',
+    before_balance  INTEGER NOT NULL DEFAULT 0,
+    after_balance   INTEGER NOT NULL DEFAULT 0,
+    amount          INTEGER NOT NULL DEFAULT 0,
+    reason          TEXT    NOT NULL DEFAULT '',
+    created_by      INTEGER NOT NULL DEFAULT 0,
+    created_by_name TEXT    NOT NULL DEFAULT '',
+    created_at      TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_account_adjust_account ON account_adjustments(account_id, id);
+CREATE INDEX IF NOT EXISTS idx_account_adjust_created ON account_adjustments(created_at);
+
 -- ===========================================================================
 -- 采购
 -- ===========================================================================

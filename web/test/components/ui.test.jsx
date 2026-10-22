@@ -17,6 +17,7 @@ import {
   Qty,
   Empty,
   NavItem,
+  SearchBox,
 } from '../../src/ui.jsx';
 
 describe('Button', () => {
@@ -158,6 +159,30 @@ describe('Modal 与展示组件', () => {
     expect(screen.getByText('底部')).toBeInTheDocument();
     fireEvent.click(screen.getByTitle('关闭'));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Modal 可禁止遮罩和 Esc 关闭，避免长表单误触', () => {
+    const onClose = vi.fn();
+    render(
+      <Modal open title="长表单" onClose={onClose} closeOnMask={false} closeOnEsc={false}>
+        内容
+      </Modal>,
+    );
+    fireEvent.click(document.querySelector('.modal-mask'));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTitle('关闭'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('SearchBox 清空时同时复位输入值并触发查询回调', () => {
+    const onInput = vi.fn();
+    const onClear = vi.fn();
+    render(<SearchBox value="关键字" onInput={onInput} onClear={onClear} />);
+    fireEvent.click(screen.getByTitle('清空'));
+    expect(onInput).toHaveBeenCalledWith('');
+    expect(onClear).toHaveBeenCalledTimes(1);
   });
 
   it('Modal 关闭时不渲染', () => {

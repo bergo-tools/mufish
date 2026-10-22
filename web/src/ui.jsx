@@ -385,7 +385,7 @@ export function Toolbar({ children, right }) {
   );
 }
 
-export function SearchBox({ value, onInput, onSearch, placeholder = '输入关键字搜索', width = 220 }) {
+export function SearchBox({ value, onInput, onSearch, onClear, placeholder = '输入关键字搜索', width = 220 }) {
   return (
     <div class="search-box" style={{ width }}>
       <Icon name="search" size={14} />
@@ -399,7 +399,14 @@ export function SearchBox({ value, onInput, onSearch, placeholder = '输入关�
         }}
       />
       {value ? (
-        <button class="search-clear" onClick={() => onInput && onInput('')} title="清空">
+        <button
+          class="search-clear"
+          onClick={() => {
+            if (onInput) onInput('');
+            if (onClear) onClear();
+          }}
+          title="清空"
+        >
           <Icon name="close" size={12} />
         </button>
       ) : null}
@@ -438,19 +445,32 @@ export function DateRange({ from, to, onFrom, onTo, children }) {
 // 弹窗
 // ---------------------------------------------------------------------------
 
-export function Modal({ open, title, onClose, children, footer, width = 640, bodyClass = '' }) {
+export function Modal({
+  open,
+  title,
+  onClose,
+  children,
+  footer,
+  width = 640,
+  bodyClass = '',
+  closeOnMask = true,
+  closeOnEsc = true,
+}) {
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e) => {
-      if (e.key === 'Escape' && onClose) onClose();
+      if (e.key === 'Escape' && onClose && closeOnEsc) onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open, onClose, closeOnEsc]);
 
   if (!open) return null;
   return (
-    <div class="modal-mask" onClick={(e) => e.target === e.currentTarget && onClose && onClose()}>
+    <div
+      class="modal-mask"
+      onClick={(e) => e.target === e.currentTarget && closeOnMask && onClose && onClose()}
+    >
       <div class="modal" style={{ width }}>
         <header class="modal-head">
           <h3>{title}</h3>

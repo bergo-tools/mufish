@@ -137,6 +137,7 @@ export default function LedgerPage({ route }) {
             value={keyword}
             onInput={setKeyword}
             onSearch={doSearch}
+            onClear={() => setFilters({ keyword: '' })}
             placeholder="商品 / 单据编号 / 备注"
             width={200}
           />

@@ -122,6 +122,8 @@ func (h *Handler) Router() http.Handler {
 		{"GET", "/api/v1/accounts/options", "account:view|payment:view|payment:create|report:view", h.accountOptions},
 		{"POST", "/api/v1/accounts", "account:manage", h.saveAccount},
 		{"PUT", "/api/v1/accounts/{id}", "account:manage", h.saveAccount},
+		{"POST", "/api/v1/accounts/{id}/adjust", "account:manage", h.adjustAccount},
+		{"GET", "/api/v1/accounts/{id}/adjustments", "account:view|account:manage", h.listAccountAdjustments},
 		{"DELETE", "/api/v1/accounts/{id}", "account:manage", h.deleteAccount},
 
 		// --- 采购 ---

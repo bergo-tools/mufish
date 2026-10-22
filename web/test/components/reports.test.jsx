@@ -92,6 +92,12 @@ describe('报表筛选口径', () => {
     await waitFor(() => expect(Api.reportInout).toHaveBeenCalledTimes(2));
     const last = Api.reportInout.mock.calls[Api.reportInout.mock.calls.length - 1][0];
     expect(last.keyword).toBe('测试关键字');
+
+    // 点清空后立即按空关键字重新查询，不再要求用户再按一次回车。
+    fireEvent.click(screen.getByTitle('清空'));
+    await waitFor(() => expect(Api.reportInout).toHaveBeenCalledTimes(3));
+    const cleared = Api.reportInout.mock.calls[Api.reportInout.mock.calls.length - 1][0];
+    expect(cleared.keyword).toBe('');
   });
 
   it('报表加载失败时显示错误与重试，而不是“暂无数据”', async () => {

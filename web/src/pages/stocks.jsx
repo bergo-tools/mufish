@@ -117,7 +117,16 @@ export default function StocksPage({ route }) {
             </>
           }
         >
-          <SearchBox value={keyword} onInput={setKeyword} onSearch={doSearch} placeholder="商品编码 / 名称 / 规格" />
+          <SearchBox
+            value={keyword}
+            onInput={setKeyword}
+            onSearch={doSearch}
+            onClear={() => {
+              setKeyword('');
+              setFilters({ keyword: '' });
+            }}
+            placeholder="商品编码 / 名称 / 规格"
+          />
           <Select
             value={filters.warehouse_id}
             onInput={(v) => setFilters({ warehouse_id: v })}

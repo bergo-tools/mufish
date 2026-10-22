@@ -359,6 +359,8 @@ export default function RolesPage({ route }) {
         open={createOpen}
         title="新增角色"
         onClose={() => setCreateOpen(false)}
+        closeOnMask={false}
+        closeOnEsc={false}
         width={520}
         footer={
           <>

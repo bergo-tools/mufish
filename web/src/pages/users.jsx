@@ -235,6 +235,7 @@ export default function UsersPage({ route }) {
               if (!v) list.setFilters({ keyword: '' });
             }}
             onSearch={() => list.setFilters({ keyword: kw })}
+            onClear={() => list.setFilters({ keyword: '' })}
             placeholder="登录名 / 姓名 / 电话"
             width={240}
           />
@@ -260,6 +261,8 @@ export default function UsersPage({ route }) {
         open={formOpen}
         title={editing ? '编辑用户' : '新增用户'}
         onClose={() => setFormOpen(false)}
+        closeOnMask={false}
+        closeOnEsc={false}
         width={640}
         footer={
           <>
@@ -322,6 +325,8 @@ export default function UsersPage({ route }) {
         open={!!resetUser}
         title="重置口令"
         onClose={() => setResetUser(null)}
+        closeOnMask={false}
+        closeOnEsc={false}
         width={440}
         footer={
           <>

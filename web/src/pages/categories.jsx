@@ -207,6 +207,8 @@ export default function CategoriesPage({ route }) {
         open={formOpen}
         title={editing ? '编辑分类' : '新增分类'}
         onClose={() => setFormOpen(false)}
+        closeOnMask={false}
+        closeOnEsc={false}
         width={520}
         footer={
           <>

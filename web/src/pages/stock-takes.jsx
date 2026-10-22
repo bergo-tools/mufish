@@ -291,6 +291,7 @@ export default function StockTakesPage({ route }) {
     try {
       await Api.finishStockTake(row.id);
       notifyOK('完成盘点成功');
+      setViewOpen(false);
       reload();
     } catch (e) {
       notifyError(e);
@@ -305,6 +306,7 @@ export default function StockTakesPage({ route }) {
     try {
       await Api.voidStockTake(row.id);
       notifyOK('作废成功');
+      setViewOpen(false);
       reload();
     } catch (e) {
       notifyError(e);
@@ -360,6 +362,7 @@ export default function StockTakesPage({ route }) {
             value={keyword}
             onInput={setKeyword}
             onSearch={doSearch}
+            onClear={() => setFilters({ keyword: '' })}
             placeholder="盘点单号 / 仓库 / 备注"
             width={200}
           />
@@ -464,6 +467,8 @@ export default function StockTakesPage({ route }) {
         title={form.id ? '编辑盘点单' : '新建盘点单'}
         width={900}
         onClose={() => setEditOpen(false)}
+        closeOnMask={false}
+        closeOnEsc={false}
         footer={
           <>
             <Button onClick={() => setEditOpen(false)}>取消</Button>
@@ -607,7 +612,21 @@ export default function StockTakesPage({ route }) {
         title="盘点单详情"
         width={900}
         onClose={() => setViewOpen(false)}
-        footer={<Button onClick={() => setViewOpen(false)}>关闭</Button>}
+        footer={
+          <>
+            {viewData && viewData.status === 0 && can('stock:take') ? (
+              <Button variant="primary" icon="check" onClick={() => handleFinish(viewData)}>
+                完成盘点
+              </Button>
+            ) : null}
+            {viewData && viewData.status === 1 && can('stock:take') ? (
+              <Button variant="danger" icon="ban" onClick={() => handleVoid(viewData)}>
+                作废
+              </Button>
+            ) : null}
+            <Button onClick={() => setViewOpen(false)}>关闭</Button>
+          </>
+        }
       >
         {viewData ? (
           <>

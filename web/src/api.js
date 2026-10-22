@@ -159,7 +159,7 @@ export const Api = {
   deleteCategory: (id) => api.del(`/categories/${id}`),
 
   products: (params) => api.get('/products', params),
-  productOptions: (keyword) => api.get('/products/options', { keyword }),
+  productOptions: (keyword, warehouse_id) => api.get('/products/options', { keyword, warehouse_id }),
   product: (id) => api.get(`/products/${id}`),
   saveProduct: (data, id) => (id ? api.put(`/products/${id}`, data) : api.post('/products', data)),
   deleteProduct: (id) => api.del(`/products/${id}`),
@@ -179,6 +179,9 @@ export const Api = {
   accounts: () => api.get('/accounts'),
   accountOptions: () => api.get('/accounts/options'),
   saveAccount: (data, id) => (id ? api.put(`/accounts/${id}`, data) : api.post('/accounts', data)),
+  adjustAccount: (id, balance, reason) =>
+    api.post(`/accounts/${id}/adjust`, { balance, reason }),
+  accountAdjustments: (id, params) => api.get(`/accounts/${id}/adjustments`, params),
   deleteAccount: (id) => api.del(`/accounts/${id}`),
 
   purchases: (params) => api.get('/purchases', params),

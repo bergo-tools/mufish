@@ -146,6 +146,20 @@ type Account struct {
 	UpdatedAt string `json:"updated_at" db:"updated_at"`
 }
 
+// AccountAdjustment 资金账户余额调账记录。
+type AccountAdjustment struct {
+	ID            int64  `json:"id" db:"id"`
+	AccountID     int64  `json:"account_id" db:"account_id"`
+	AccountName   string `json:"account_name" db:"account_name"`
+	BeforeBalance Money  `json:"before_balance" db:"before_balance"`
+	AfterBalance  Money  `json:"after_balance" db:"after_balance"`
+	Amount        Money  `json:"amount" db:"amount"`
+	Reason        string `json:"reason" db:"reason"`
+	CreatedBy     int64  `json:"created_by" db:"created_by"`
+	CreatedByName string `json:"created_by_name" db:"created_by_name"`
+	CreatedAt     string `json:"created_at" db:"created_at"`
+}
+
 // ---------------------------------------------------------------------------
 // 单据
 // ---------------------------------------------------------------------------

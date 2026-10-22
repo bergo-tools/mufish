@@ -112,21 +112,21 @@ export default function SalesPage({ route }) {
     };
   }, []);
 
-  // 按关键字加载商品选项。
-  const loadProducts = async (kw) => {
+  // 按关键字加载商品选项；同时带出当前仓库的可用库存。
+  const loadProducts = async (kw, warehouseId) => {
     try {
-      const res = await Api.productOptions(kw || '');
+      const res = await Api.productOptions(kw || '', warehouseId || '');
       setProducts(res || []);
     } catch (e) {
       notifyError(e);
     }
   };
 
-  // 打开新建/编辑弹窗时刷新一次商品选项。
+  // 打开新建/编辑弹窗或切换仓库时刷新商品选项与可用库存。
   useEffect(() => {
-    if (formOpen) loadProducts(productKw);
+    if (formOpen) loadProducts(productKw, form && form.warehouse_id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [formOpen]);
+  }, [formOpen, form && form.warehouse_id]);
 
   // 详情数据（详情统一走 useAsync）。
   const detail = useAsync(() => (detailId ? Api.sale(detailId) : Promise.resolve(null)), [detailId]);
@@ -432,6 +432,7 @@ export default function SalesPage({ route }) {
             value={keyword}
             onInput={setKeyword}
             onSearch={() => setFilters({ keyword: keyword.trim() })}
+            onClear={() => setFilters({ keyword: '' })}
             placeholder="单据号 / 客户 / 仓库"
             width={230}
           />
@@ -486,6 +487,8 @@ export default function SalesPage({ route }) {
           open
           title={editing ? '编辑销售单 ' + editing.order_no : '新建销售单'}
           onClose={closeForm}
+          closeOnMask={false}
+          closeOnEsc={false}
           width={1000}
           bodyClass="no-pad"
           footer={
@@ -530,7 +533,7 @@ export default function SalesPage({ route }) {
               <SearchBox
                 value={productKw}
                 onInput={setProductKw}
-                onSearch={() => loadProducts(productKw)}
+                onSearch={() => loadProducts(productKw, form.warehouse_id)}
                 placeholder="搜索商品，回车刷新下拉"
                 width={240}
               />
@@ -550,14 +553,27 @@ export default function SalesPage({ route }) {
                 {
                   title: '商品',
                   width: 260,
-                  render: (r, i) => (
-                    <Select
-                      value={r.product_id}
-                      onInput={(v) => pickProduct(i, v)}
-                      options={productOptions}
-                      placeholder="选择商品"
-                    />
-                  ),
+                  render: (r, i) => {
+                    const p = productMap.get(String(r.product_id));
+                    const available = p && p.stock_qty !== undefined ? Number(p.stock_qty) : null;
+                    const short = available !== null && num(r.qty) > available;
+                    return (
+                      <div class="col" style="gap:4px">
+                        <Select
+                          value={r.product_id}
+                          onInput={(v) => pickProduct(i, v)}
+                          options={productOptions}
+                          placeholder="选择商品"
+                        />
+                        {available !== null ? (
+                          <span class={'small ' + (short ? 'money-neg' : 'muted')}>
+                            可用 {fmtQty(available)}
+                            {short ? ' · 库存不足' : ''}
+                          </span>
+                        ) : null}
+                      </div>
+                    );
+                  },
                 },
                 {
                   title: '数量',
@@ -652,6 +668,16 @@ export default function SalesPage({ route }) {
             {detailData && detailData.status === 0 && can('sales:update') ? (
               <Button icon="edit" onClick={() => openEdit(detailData)}>
                 编辑
+              </Button>
+            ) : null}
+            {detailData && detailData.status === 0 && can('sales:confirm') ? (
+              <Button variant="primary" icon="check" onClick={() => doConfirm(detailData)}>
+                确认出库
+              </Button>
+            ) : null}
+            {detailData && detailData.status === 1 && can('sales:void') ? (
+              <Button variant="danger" icon="ban" onClick={() => doVoid(detailData)}>
+                作废
               </Button>
             ) : null}
             <Button onClick={() => setDetailId(null)}>关闭</Button>
