@@ -368,10 +368,11 @@ func (s *Store) SaveStockTake(ctx context.Context, id int64, in StockTakeInput, 
 	in.TakeDate = model.NormDate(in.TakeDate)
 	now := model.Now()
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
-		wh, err := loadWarehouseName(ctx, tx, in.WarehouseID)
+		whID, wh, err := loadWarehouse(ctx, tx, in.WarehouseID)
 		if err != nil {
 			return err
 		}
+		in.WarehouseID = whID
 		if id == 0 {
 			no, err := nextDocNo(ctx, tx, "take", "PD", in.TakeDate)
 			if err != nil {
@@ -659,11 +660,11 @@ func (s *Store) SaveTransfer(ctx context.Context, id int64, in TransferInput, us
 	in.TransferDate = model.NormDate(in.TransferDate)
 	now := model.Now()
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
-		from, err := loadWarehouseName(ctx, tx, in.FromWarehouseID)
+		_, from, err := loadWarehouse(ctx, tx, in.FromWarehouseID)
 		if err != nil {
 			return err
 		}
-		to, err := loadWarehouseName(ctx, tx, in.ToWarehouseID)
+		_, to, err := loadWarehouse(ctx, tx, in.ToWarehouseID)
 		if err != nil {
 			return err
 		}

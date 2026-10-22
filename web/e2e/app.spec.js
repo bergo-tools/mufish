@@ -129,3 +129,61 @@ test('商品 → 采购入库 → 销售出库 → 库存流水', async ({ page 
   await expect(page.locator('.table tbody')).toContainText('采购入库');
   await expect(page.locator('.table tbody')).toContainText('销售出库');
 });
+
+test('盘点可添加零库存商品并完成盘盈调整', async ({ page }) => {
+  const suffix = Date.now().toString().slice(-8);
+  const code = 'E2E-ZERO-' + suffix;
+  const name = '零库存盘点商品' + suffix;
+
+  await login(page);
+
+  // 新建一个从未入库的商品。
+  await nav(page, '商品管理', '商品列表');
+  await page.getByRole('button', { name: '新增商品' }).click();
+  const productModal = page.locator('.modal');
+  await expect(productModal).toBeVisible();
+  await productModal.getByLabel('商品编码').fill(code);
+  await productModal.getByLabel('商品名称').fill(name);
+  await productModal.getByRole('button', { name: '保存' }).click();
+  await expect(productModal).toHaveCount(0);
+  await toast(page, '新增成功');
+
+  // 新建盘点单，把零库存商品加进来并录入实盘数 5。
+  await nav(page, '库存盘点', '盘点单列表');
+  await page.getByRole('button', { name: '新建盘点' }).click();
+  const takeModal = page.locator('.modal');
+  await expect(takeModal).toBeVisible();
+  await takeModal.locator('.form-grid select').first().selectOption({ label: '主仓库' });
+  await expect(takeModal.locator('.doc-items-table tbody tr').first()).toBeVisible();
+
+  const search = takeModal.getByPlaceholder('搜索商品后添加到盘点');
+  await search.fill(code);
+  await takeModal.getByRole('button', { name: '搜索商品' }).click();
+  const productSelect = takeModal.locator('select').filter({
+    has: page.locator('option', { hasText: code }),
+  });
+  await expect(productSelect).toHaveCount(1);
+  await productSelect.selectOption({ label: code + ' ' + name });
+  await takeModal.getByRole('button', { name: '添加商品' }).click();
+
+  const takeRow = takeModal.locator('.doc-items-table tbody tr').filter({ hasText: code });
+  await expect(takeRow).toHaveCount(1);
+  await takeRow.locator('input[type="number"]').fill('5');
+  await takeModal.getByRole('button', { name: '保存' }).click();
+  await expect(takeModal).toHaveCount(0);
+  await toast(page, '新建成功');
+
+  const takeListRow = page.locator('.table tbody tr').filter({ hasText: '主仓库' }).first();
+  await expect(takeListRow).toBeVisible();
+  await takeListRow.getByRole('button', { name: '完成盘点' }).click();
+  await page.getByRole('button', { name: '确定' }).click();
+  await toast(page, '完成盘点成功');
+
+  // 库存查询应出现该商品的 5 个结存。
+  await nav(page, '库存查询', '库存明细');
+  await page.getByPlaceholder('商品编码 / 名称 / 规格').fill(code);
+  await page.getByRole('button', { name: '查询' }).click();
+  const stockRow = page.locator('.table tbody tr').filter({ hasText: code });
+  await expect(stockRow).toHaveCount(1);
+  await expect(stockRow.locator('td').nth(6)).toHaveText('5');
+});

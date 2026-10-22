@@ -163,6 +163,14 @@ export default function ProductsPage({ route }) {
       notifyError(new Error('请填写商品名称'));
       return;
     }
+    if (Number(form.purchase_price || 0) < 0 || Number(form.sale_price || 0) < 0) {
+      notifyError(new Error('参考进价和参考售价不能为负数'));
+      return;
+    }
+    if (Number(form.safety_stock || 0) < 0 || Number(form.safety_stock_max || 0) < 0) {
+      notifyError(new Error('安全库存和库存上限不能为负数'));
+      return;
+    }
     setSaving(true);
     try {
       const data = {
@@ -235,14 +243,14 @@ export default function ProductsPage({ route }) {
     }
   };
 
-  const doExport = () => {
+  const doExport = async () => {
     try {
-      Api.exportProducts({
+      await Api.exportProducts({
         keyword: filters.keyword,
         category_id: filters.category_id,
         status: filters.status,
       });
-      notifyOK('导出已开始');
+      notifyOK('导出成功');
     } catch (e) {
       notifyError(e);
     }
@@ -415,7 +423,7 @@ export default function ProductsPage({ route }) {
           <Field label="安全库存">
             <NumberInput value={form.safety_stock} onInput={setField('safety_stock')} min="0" />
           </Field>
-          <Field label="库存上限">
+          <Field label="库存上限" hint="预留字段，暂不参与超储预警">
             <NumberInput value={form.safety_stock_max} onInput={setField('safety_stock_max')} min="0" />
           </Field>
           <Field label="状态">

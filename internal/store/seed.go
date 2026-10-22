@@ -136,6 +136,7 @@ func defaultSettings() map[string]string {
 		"allow_negative_stock":  "0",
 		"purchase_price_follow": "1", // 采购入库是否更新商品参考进价
 		"sales_price_follow":    "0", // 销售出库是否更新商品参考售价
+		"purchase_cost_include": "1", // 采购优惠/运费等是否计入库存成本
 		"doc_print_note":        "感谢惠顾，欢迎再次光临！",
 		"session_hours":         "72",
 	}
@@ -146,8 +147,11 @@ func (s *Store) seed(ctx context.Context) error {
 		now := model.Now()
 
 		// --- 角色 ---
+		// 默认权限只在角色首次创建时写入。已存在角色的权限由管理员维护，
+		// 不能在每次启动时用 INSERT OR IGNORE 重新加回来。
 		for _, r := range defaultRoles() {
 			var id int64
+			created := false
 			err := tx.QueryRowContext(ctx, `SELECT id FROM roles WHERE code=?`, r.Code).Scan(&id)
 			if err == sql.ErrNoRows {
 				res, err := tx.ExecContext(ctx,
@@ -157,8 +161,12 @@ func (s *Store) seed(ctx context.Context) error {
 					return err
 				}
 				id, _ = res.LastInsertId()
+				created = true
 			} else if err != nil {
 				return err
+			}
+			if !created {
+				continue
 			}
 			for _, p := range r.Perms {
 				if _, err := tx.ExecContext(ctx,
@@ -248,14 +256,26 @@ func (s *Store) seed(ctx context.Context) error {
 		}
 
 		// --- 演示数据开关 ---
-		var prodCount int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM products`).Scan(&prodCount); err != nil {
-			return err
-		}
-		if prodCount == 0 {
-			if err := seedDemo(ctx, tx); err != nil {
+		// 用一次性标记而不是「products 表为空」判断，避免用户清空商品后
+		// 重启又被写入演示数据，或与已有编码冲突导致启动失败。
+		var demoSeeded string
+		err := tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='demo_seeded'`).Scan(&demoSeeded)
+		if err == sql.ErrNoRows {
+			var prodCount int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM products`).Scan(&prodCount); err != nil {
 				return err
 			}
+			if prodCount == 0 {
+				if err := seedDemo(ctx, tx); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO settings(key, value) VALUES('demo_seeded','1')`); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
 		}
 		return nil
 	})
@@ -305,7 +325,7 @@ func seedDemo(ctx context.Context, tx *sql.Tx) error {
 	}
 	for _, p := range partners {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO partners(code, name, type, contact, phone, init_receivable, init_payable,
+			`INSERT OR IGNORE INTO partners(code, name, type, contact, phone, init_receivable, init_payable,
 			   status, remark, created_at, updated_at)
 			 VALUES(?,?,?,?,?,?,?,1,'',?,?)`,
 			p.code, p.name, p.typ, p.contact, p.phone,
@@ -330,7 +350,7 @@ func seedDemo(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO users(username, password, name, role_id, status, remark, created_at, updated_at)
+			`INSERT OR IGNORE INTO users(username, password, name, role_id, status, remark, created_at, updated_at)
 			 VALUES(?,?,?,?,1,'演示账号',?,?)`,
 			u.username, hash, u.name, roleID, now, now); err != nil {
 			return err

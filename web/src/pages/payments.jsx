@@ -89,6 +89,7 @@ export default function PaymentsPage({ route }) {
   const [saving, setSaving] = useState(false);
   const [detail, setDetail] = useState(null); // 详情弹窗数据
   const [keyword, setKeyword] = useState('');
+  const [partnerKw, setPartnerKw] = useState('');
 
   // 往来单位 / 资金账户下拉数据（按表单类型区分客户或供应商）。
   const formType = form ? form.type : active;
@@ -132,6 +133,29 @@ export default function PaymentsPage({ route }) {
   const partnerList = (options.data && options.data.partners) || [];
   const accountList = (options.data && options.data.accounts) || [];
 
+  // 往来单位默认最多 300 条，搜索后把结果合并进下拉，已选单位不会因搜索消失。
+  const searchPartners = async () => {
+    try {
+      const partners = await Api.partnerOptions(partnerKindOf(formType), partnerKw);
+      options.setData((prev) => {
+        const merged = new Map();
+        ((prev && prev.partners) || []).forEach((p) => merged.set(p.id, p));
+        (partners || []).forEach((p) => merged.set(p.id, p));
+        return { ...(prev || {}), partners: Array.from(merged.values()) };
+      });
+    } catch (e) {
+      toastError(e);
+    }
+  };
+
+  const partnerOptions = partnerList.map((p) => ({ value: String(p.id), label: p.name }));
+  if (form && form.partner_id && !partnerList.some((p) => String(p.id) === String(form.partner_id))) {
+    partnerOptions.unshift({
+      value: String(form.partner_id),
+      label: form.partner_name || '已选单位',
+    });
+  }
+
   // 切换单据类型页签。
   const switchTab = (key) => {
     setActive(key);
@@ -141,11 +165,13 @@ export default function PaymentsPage({ route }) {
 
   // 打开新建 / 编辑弹窗。
   const openForm = (row) => {
+    setPartnerKw('');
     if (row) {
       setForm({
         id: row.id,
         type: row.type || active,
         partner_id: row.partner_id ? String(row.partner_id) : '',
+        partner_name: row.partner_name || '',
         account_id: row.account_id ? String(row.account_id) : '',
         pay_date: row.pay_date ? fmtDate(row.pay_date) : today(),
         amount: row.amount === undefined || row.amount === null ? '' : String(row.amount),
@@ -161,6 +187,7 @@ export default function PaymentsPage({ route }) {
       id: 0,
       type: active,
       partner_id: '',
+      partner_name: '',
       account_id: def ? String(def.id) : '',
       pay_date: today(),
       amount: '',
@@ -178,12 +205,28 @@ export default function PaymentsPage({ route }) {
   // 切换表单单据类型：往来单位与关联单据需要重选。
   const changeFormType = (type) => {
     setUnpaid([]);
-    setForm((prev) => (prev ? { ...prev, type, partner_id: '', order_id: '', order_no: '' } : prev));
+    setPartnerKw('');
+    setForm((prev) =>
+      prev
+        ? { ...prev, type, partner_id: '', partner_name: '', order_id: '', order_no: '' }
+        : prev,
+    );
   };
 
   // 选择往来单位：清空关联单据。
   const changePartner = (partner_id) => {
-    setForm((prev) => (prev ? { ...prev, partner_id, order_id: '', order_no: '' } : prev));
+    const p = partnerList.find((x) => String(x.id) === String(partner_id));
+    setForm((prev) =>
+      prev
+        ? {
+            ...prev,
+            partner_id,
+            partner_name: p ? p.name : prev.partner_name || '',
+            order_id: '',
+            order_no: '',
+          }
+        : prev,
+    );
   };
 
   // 选择关联单据：自动带入未结金额。
@@ -204,7 +247,7 @@ export default function PaymentsPage({ route }) {
       notifyError(new Error('请选择往来单位'));
       return;
     }
-    if (!form.account_id) {
+    if (form.method !== 'offset' && !form.account_id) {
       notifyError(new Error('请选择资金账户'));
       return;
     }
@@ -219,7 +262,7 @@ export default function PaymentsPage({ route }) {
         {
           type: form.type,
           partner_id: Number(form.partner_id),
-          account_id: Number(form.account_id),
+          account_id: Number(form.account_id) || 0,
           pay_date: form.pay_date || today(),
           amount,
           method: form.method,
@@ -241,7 +284,10 @@ export default function PaymentsPage({ route }) {
 
   // 确认单据。
   const confirm = async (row) => {
-    const ok = await confirmDialog(`确认单据「${row.payment_no}」？确认后将影响往来账款与资金余额。`);
+    const effect = row.method === 'offset'
+      ? '确认后将核销往来账款，不改变资金余额。'
+      : '确认后将影响往来账款与资金余额。';
+    const ok = await confirmDialog(`确认单据「${row.payment_no}」？${effect}`);
     if (!ok) return;
     try {
       await Api.confirmPayment(row.id);
@@ -364,7 +410,7 @@ export default function PaymentsPage({ route }) {
           ),
         },
         { label: '往来单位', value: detail.partner_name || '-' },
-        { label: '资金账户', value: detail.account_name || '-' },
+        { label: '资金账户', value: detail.method === 'offset' ? '无需资金账户' : detail.account_name || '-' },
         { label: '单据日期', value: fmtDate(detail.pay_date) },
         { label: '金额', value: <Money value={detail.amount} bold /> },
         { label: '结算方式', value: METHOD_TEXT[detail.method] || detail.method || '-' },
@@ -465,15 +511,38 @@ export default function PaymentsPage({ route }) {
                 onInput={(e) => patchForm('pay_date', e.target.value)}
               />
             </Field>
-            <Field label="往来单位" required hint={options.loading ? '加载中…' : ''}>
-              <Select
-                value={form.partner_id}
-                onInput={changePartner}
-                options={partnerList.map((p) => ({ value: String(p.id), label: p.name }))}
-                placeholder="请选择往来单位"
-              />
+            <Field
+              label="往来单位"
+              required
+              hint={options.loading ? '加载中…' : '单位较多时可先搜索，再选择'}
+            >
+              <div class="col">
+                <div class="row" style="gap:6px; margin-bottom:6px">
+                  <SearchBox
+                    value={partnerKw}
+                    onInput={setPartnerKw}
+                    onSearch={searchPartners}
+                    placeholder="搜索单位名称/编码"
+                    width={180}
+                  />
+                  <Button size="sm" icon="search" onClick={searchPartners}>
+                    搜索
+                  </Button>
+                </div>
+                <Select
+                  value={form.partner_id}
+                  onInput={changePartner}
+                  options={partnerOptions}
+                  placeholder="请选择往来单位"
+                />
+              </div>
             </Field>
-            <Field label="资金账户" required hint={options.loading ? '加载中…' : ''}>
+            {form.method === 'offset' ? (
+              <Field label="资金账户" hint="往来冲抵不产生现金流动，不需要选择账户">
+                <span class="muted">无需资金账户</span>
+              </Field>
+            ) : (
+              <Field label="资金账户" required hint={options.loading ? '加载中…' : ''}>
               <Select
                 value={form.account_id}
                 onInput={(v) => patchForm('account_id', v)}
@@ -483,7 +552,8 @@ export default function PaymentsPage({ route }) {
                 }))}
                 placeholder="请选择资金账户"
               />
-            </Field>
+              </Field>
+            )}
             <Field label="金额" required>
               <NumberInput
                 value={form.amount}
@@ -495,7 +565,13 @@ export default function PaymentsPage({ route }) {
             <Field label="结算方式" required>
               <Select
                 value={form.method}
-                onInput={(v) => patchForm('method', v)}
+                onInput={(v) =>
+                  setForm((prev) =>
+                    prev
+                      ? { ...prev, method: v, account_id: v === 'offset' ? '' : prev.account_id }
+                      : prev,
+                  )
+                }
                 options={METHOD_OPTIONS}
                 placeholder={null}
               />

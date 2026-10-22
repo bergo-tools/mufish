@@ -17,7 +17,9 @@ import (
 func (s *Store) Dashboard(ctx context.Context) (model.DashboardSummary, error) {
 	var d model.DashboardSummary
 	today := model.Today()
-	monthStart := today[:8] + "01"
+	now := time.Now()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).Format(model.DateLayout)
+	nextMonth := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.Local).Format(model.DateLayout)
 
 	scalar := func(sqlStr string, args ...any) (int64, error) {
 		var v int64
@@ -32,14 +34,14 @@ func (s *Store) Dashboard(ctx context.Context) (model.DashboardSummary, error) {
 	if d.TodayPurchase, err = money1(scalar(`SELECT COALESCE(SUM(settle_amount),0) FROM purchase_orders WHERE status=1 AND order_date=?`, today)); err != nil {
 		return d, err
 	}
-	if d.MonthSales, err = money1(scalar(`SELECT COALESCE(SUM(settle_amount),0) FROM sales_orders WHERE status=1 AND order_date>=?`, monthStart)); err != nil {
+	if d.MonthSales, err = money1(scalar(`SELECT COALESCE(SUM(settle_amount),0) FROM sales_orders WHERE status=1 AND order_date>=? AND order_date<?`, monthStart, nextMonth)); err != nil {
 		return d, err
 	}
-	if d.MonthPurchase, err = money1(scalar(`SELECT COALESCE(SUM(settle_amount),0) FROM purchase_orders WHERE status=1 AND order_date>=?`, monthStart)); err != nil {
+	if d.MonthPurchase, err = money1(scalar(`SELECT COALESCE(SUM(settle_amount),0) FROM purchase_orders WHERE status=1 AND order_date>=? AND order_date<?`, monthStart, nextMonth)); err != nil {
 		return d, err
 	}
 	if d.MonthProfit, err = money1(scalar(
-		`SELECT COALESCE(SUM(settle_amount - cost_amount),0) FROM sales_orders WHERE status=1 AND order_date>=?`, monthStart)); err != nil {
+		`SELECT COALESCE(SUM(settle_amount - cost_amount),0) FROM sales_orders WHERE status=1 AND order_date>=? AND order_date<?`, monthStart, nextMonth)); err != nil {
 		return d, err
 	}
 
@@ -99,7 +101,9 @@ func (s *Store) Dashboard(ctx context.Context) (model.DashboardSummary, error) {
 		return d, err
 	}
 	d.PartnerCount = int(nc)
-	if d.AccountTotal, err = money1(scalar(`SELECT COALESCE(SUM(balance),0) FROM accounts WHERE status=1`)); err != nil {
+	// 资金余额统计全部账户，与资金账户页保持一致；停用只代表不能新增
+	// 收付款，账户里的余额仍然是企业资金。
+	if d.AccountTotal, err = money1(scalar(`SELECT COALESCE(SUM(balance),0) FROM accounts`)); err != nil {
 		return d, err
 	}
 	return d, nil
@@ -429,7 +433,8 @@ func (s *Store) PurchaseDetail(ctx context.Context, q DocDetailQuery) ([]model.O
 	}
 	args = append(args, limit)
 	return query[model.OrderItem](ctx, s.db,
-		`SELECT i.id, i.order_id AS doc_id, i.product_id, i.product_code, i.product_name, i.spec, i.unit,
+		`SELECT i.id, i.order_id AS doc_id, o.order_no AS doc_no, o.order_date AS doc_date,
+		   i.product_id, i.product_code, i.product_name, i.spec, i.unit,
 		   i.qty, i.price, i.amount, i.remark, 0 AS sort
 		 FROM purchase_items i JOIN purchase_orders o ON o.id=i.order_id
 		 WHERE `+strings.Join(where, " AND ")+` ORDER BY o.order_date DESC, o.id DESC LIMIT ?`, args...)
@@ -463,7 +468,8 @@ func (s *Store) SalesDetail(ctx context.Context, q DocDetailQuery) ([]model.Orde
 	}
 	args = append(args, limit)
 	return query[model.OrderItem](ctx, s.db,
-		`SELECT i.id, i.order_id AS doc_id, i.product_id, i.product_code, i.product_name, i.spec, i.unit,
+		`SELECT i.id, i.order_id AS doc_id, o.order_no AS doc_no, o.order_date AS doc_date,
+		   i.product_id, i.product_code, i.product_name, i.spec, i.unit,
 		   i.qty, i.price, i.amount, i.remark, 0 AS sort
 		 FROM sales_items i JOIN sales_orders o ON o.id=i.order_id
 		 WHERE `+strings.Join(where, " AND ")+` ORDER BY o.order_date DESC, o.id DESC LIMIT ?`, args...)
@@ -474,10 +480,15 @@ func (s *Store) SalesDetail(ctx context.Context, q DocDetailQuery) ([]model.Orde
 // ---------------------------------------------------------------------------
 
 // CashFlow 资金流水表。
-func (s *Store) CashFlow(ctx context.Context, from, to string, accountID int64, limit int) ([]model.Payment, error) {
+func (s *Store) CashFlow(ctx context.Context, from, to, keyword string, accountID int64, limit int) ([]model.Payment, error) {
 	from, to = dateRange(from, to)
-	where := []string{"status=1", "pay_date>=?", "pay_date<=?"}
+	where := []string{"status=1", "pay_date>=?", "pay_date<=?", "method<>'offset'"}
 	args := []any{from, to}
+	if kw := strings.TrimSpace(keyword); kw != "" {
+		where = append(where, "(payment_no LIKE ? OR partner_name LIKE ? OR order_no LIKE ? OR remark LIKE ?)")
+		like := "%" + kw + "%"
+		args = append(args, like, like, like, like)
+	}
 	if accountID > 0 {
 		where = append(where, "account_id=?")
 		args = append(args, accountID)

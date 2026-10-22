@@ -32,7 +32,7 @@ func main() {
 	var (
 		addr    = flag.String("addr", "127.0.0.1:8899", "监听地址，例如 0.0.0.0:8899")
 		dataDir = flag.String("data", "data", "数据目录，存放 SQLite 数据库与备份")
-		open    = flag.Bool("open", false, "启动后自动打开浏览器")
+		open    = flag.Bool("open", defaultOpenBrowser(runtime.GOOS), "启动后自动打开浏览器（Windows/macOS 默认开启，Linux 默认关闭）")
 		showVer = flag.Bool("version", false, "显示版本号")
 	)
 	flag.Parse()
@@ -100,24 +100,33 @@ func run(addr, dataDir string, openBrowser bool) error {
 		}
 	}()
 
-	url := displayURL(addr)
+	// 先完成监听，再打开浏览器；端口占用时直接报错，不会先弹出一个打不开的页面。
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		close(stopClean)
+		return fmt.Errorf("监听地址 %s 失败: %w", addr, err)
+	}
+	defer ln.Close()
+
+	url := displayURL(ln.Addr().String())
 	printBanner(url, dbPath, absData)
+
+	errCh := make(chan error, 1)
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
 
 	if openBrowser {
 		go func() {
-			time.Sleep(600 * time.Millisecond)
+			// 给 Serve 一点点启动时间，避免浏览器抢先请求时页面空白。
+			time.Sleep(300 * time.Millisecond)
 			if err := openURL(url); err != nil {
 				log.Printf("自动打开浏览器失败：%v", err)
 			}
 		}()
 	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-		}
-	}()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -137,6 +146,12 @@ func run(addr, dataDir string, openBrowser bool) error {
 		log.Println("已安全退出，数据已保存。")
 	}
 	return nil
+}
+
+// defaultOpenBrowser 按平台决定是否默认打开浏览器。
+// Windows/macOS 的桌面用户双击即用；Linux 默认不主动弹窗，可用 -open 开启。
+func defaultOpenBrowser(goos string) bool {
+	return goos == "windows" || goos == "darwin"
 }
 
 func displayURL(addr string) string {
@@ -167,13 +182,19 @@ func printBanner(url, dbPath, dataDir string) {
 	fmt.Println()
 }
 
-func openURL(url string) error {
-	switch runtime.GOOS {
+// browserCommand 返回在指定平台打开 URL 的命令和参数，便于单元测试。
+func browserCommand(goos, url string) (string, []string) {
+	switch goos {
 	case "darwin":
-		return exec.Command("open", url).Start()
+		return "open", []string{url}
 	case "windows":
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+		return "rundll32", []string{"url.dll,FileProtocolHandler", url}
 	default:
-		return exec.Command("xdg-open", url).Start()
+		return "xdg-open", []string{url}
 	}
+}
+
+func openURL(url string) error {
+	name, args := browserCommand(runtime.GOOS, url)
+	return exec.Command(name, args...).Start()
 }

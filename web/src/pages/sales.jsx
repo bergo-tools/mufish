@@ -266,6 +266,23 @@ export default function SalesPage({ route }) {
       notifyError('明细行数量必须大于 0');
       return;
     }
+    if (rows.some((it) => num(it.price) < 0)) {
+      notifyError('明细行单价不能为负数');
+      return;
+    }
+    if (num(form.discount_amount) < 0) {
+      notifyError('优惠金额不能为负数');
+      return;
+    }
+    if (num(form.other_fee) < 0) {
+      notifyError('其他费用不能为负数');
+      return;
+    }
+    const submittedTotal = rows.reduce((s, it) => s + num(it.qty) * num(it.price), 0);
+    if (num(form.discount_amount) > submittedTotal) {
+      notifyError('优惠金额不能超过明细金额');
+      return;
+    }
     const payload = {
       customer_id: Number(form.customer_id),
       warehouse_id: Number(form.warehouse_id),
@@ -439,8 +456,17 @@ export default function SalesPage({ route }) {
             { title: '单据日期', width: 104, render: (r) => fmtDate(r.order_date) },
             { title: '数量', align: 'right', render: (r) => <span class="num">{fmtQty(r.total_qty)}</span> },
             { title: '金额', align: 'right', render: (r) => <Money value={r.total_amount} /> },
-            { title: '成本', align: 'right', render: (r) => <Money value={r.cost_amount} /> },
-            { title: '毛利', align: 'right', render: (r) => <Money value={grossProfit(r)} colored /> },
+            {
+              title: '成本',
+              align: 'right',
+              render: (r) => (r.status === 1 ? <Money value={r.cost_amount} /> : <span class="muted">-</span>),
+            },
+            {
+              title: '毛利',
+              align: 'right',
+              render: (r) =>
+                r.status === 1 ? <Money value={grossProfit(r)} colored /> : <span class="muted">-</span>,
+            },
             { title: '已收', align: 'right', render: (r) => <Money value={r.received_amount} /> },
             { title: '状态', align: 'center', width: 76, render: (r) => <StatusTag status={r.status} /> },
             { title: '制单人', render: (r) => r.created_by_name || '-' },
@@ -687,11 +713,11 @@ export default function SalesPage({ route }) {
               </div>
               <div class="doc-total-item">
                 <span>成本</span>
-                <strong>{fmtMoney(detailData.cost_amount)}</strong>
+                <strong>{detailData.status === 1 ? fmtMoney(detailData.cost_amount) : '-'}</strong>
               </div>
               <div class="doc-total-item">
                 <span>毛利</span>
-                <strong>{fmtMoney(grossProfit(detailData))}</strong>
+                <strong>{detailData.status === 1 ? fmtMoney(grossProfit(detailData)) : '-'}</strong>
               </div>
               <div class="doc-total-item">
                 <span>优惠金额</span>

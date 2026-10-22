@@ -266,6 +266,12 @@ func (s *Store) SaveProduct(ctx context.Context, id int64, in ProductInput) (int
 	if in.Unit == "" {
 		in.Unit = "个"
 	}
+	if in.PurchasePrice < 0 || in.SalePrice < 0 {
+		return 0, fmt.Errorf("%w: 参考进价和参考售价不能为负数", ErrBadRequest)
+	}
+	if in.SafetyStock < 0 || in.SafetyStockMax < 0 {
+		return 0, fmt.Errorf("%w: 安全库存和库存上限不能为负数", ErrBadRequest)
+	}
 	now := model.Now()
 	if id > 0 {
 		if in.Code == "" {
@@ -441,7 +447,20 @@ func (s *Store) ListPartners(ctx context.Context, q PartnerQuery) (model.Page[mo
 	page, size := normPage(q.Page, q.Size)
 	args2 := append(append([]any{}, args...), size, (page-1)*size)
 	list, err := query[model.Partner](ctx, s.db,
-		`SELECT `+partnerCols+` FROM partners p WHERE `+cond+` ORDER BY p.id DESC LIMIT ? OFFSET ?`, args2...)
+		`SELECT `+partnerCols+`,
+		   p.init_receivable
+		   + COALESCE((SELECT SUM(o.settle_amount - o.received_amount)
+		               FROM sales_orders o WHERE o.customer_id=p.id AND o.status=1),0)
+		   - COALESCE((SELECT SUM(pm.amount)
+		               FROM payments pm WHERE pm.partner_id=p.id AND pm.type='receipt'
+		                 AND pm.status=1 AND pm.order_id=0),0) AS receivable,
+		   p.init_payable
+		   + COALESCE((SELECT SUM(o.settle_amount - o.paid_amount)
+		               FROM purchase_orders o WHERE o.supplier_id=p.id AND o.status=1),0)
+		   - COALESCE((SELECT SUM(pm.amount)
+		               FROM payments pm WHERE pm.partner_id=p.id AND pm.type='payment'
+		                 AND pm.status=1 AND pm.order_id=0),0) AS payable
+		 FROM partners p WHERE `+cond+` ORDER BY p.id DESC LIMIT ? OFFSET ?`, args2...)
 	if err != nil {
 		return out, err
 	}
@@ -606,6 +625,18 @@ func (s *Store) SavePartner(ctx context.Context, id int64, in PartnerInput) (int
 
 // DeletePartner 删除往来单位。
 func (s *Store) DeletePartner(ctx context.Context, id int64) error {
+	var initRecv, initPay int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT init_receivable, init_payable FROM partners WHERE id=?`, id).
+		Scan(&initRecv, &initPay); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrNotFound
+		}
+		return err
+	}
+	if initRecv != 0 || initPay != 0 {
+		return fmt.Errorf("%w: 该单位仍有期初应收/应付余额，请先结清或调整后再删除", ErrInUse)
+	}
 	checks := []struct {
 		sql string
 		msg string
@@ -898,6 +929,16 @@ func (s *Store) SaveAccount(ctx context.Context, id int64, in AccountInput) (int
 
 // DeleteAccount 删除账户。
 func (s *Store) DeleteAccount(ctx context.Context, id int64) error {
+	var balance int64
+	if err := s.db.QueryRowContext(ctx, `SELECT balance FROM accounts WHERE id=?`, id).Scan(&balance); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrNotFound
+		}
+		return err
+	}
+	if balance != 0 {
+		return fmt.Errorf("%w: 该账户余额不为 0，请先转出或调账后再删除", ErrInUse)
+	}
 	var n int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM payments WHERE account_id=?`, id).Scan(&n); err != nil {
 		return err

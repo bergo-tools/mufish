@@ -124,13 +124,18 @@ func (s *Store) SavePayment(ctx context.Context, id int64, in PaymentInput, user
 		if err != nil {
 			return err
 		}
-		acc, ok, err := queryRow[model.Account](ctx, tx,
-			`SELECT id, name FROM accounts WHERE id=?`, in.AccountID)
-		if err != nil {
-			return err
-		}
-		if !ok || acc.ID == 0 {
-			return fmt.Errorf("%w: 请选择资金账户", ErrBadRequest)
+		// 往来冲抵不产生现金流动，不需要资金账户；其他结算方式仍必须选择。
+		accName := ""
+		if !(in.Method == "offset" && in.AccountID == 0) {
+			acc, ok, err := queryRow[model.Account](ctx, tx,
+				`SELECT id, name FROM accounts WHERE id=?`, in.AccountID)
+			if err != nil {
+				return err
+			}
+			if !ok || acc.ID == 0 {
+				return fmt.Errorf("%w: 请选择资金账户", ErrBadRequest)
+			}
+			accName = acc.Name
 		}
 		orderNo := ""
 		switch in.OrderType {
@@ -186,7 +191,7 @@ func (s *Store) SavePayment(ctx context.Context, id int64, in PaymentInput, user
 				`UPDATE payments SET type=?, partner_id=?, partner_name=?, account_id=?, account_name=?,
 				   pay_date=?, amount=?, method=?, order_type=?, order_id=?, order_no=?, remark=?, updated_at=?
 				 WHERE id=?`,
-				in.Type, in.PartnerID, partnerName, in.AccountID, acc.Name, in.PayDate, in.Amount,
+				in.Type, in.PartnerID, partnerName, in.AccountID, accName, in.PayDate, in.Amount,
 				in.Method, in.OrderType, in.OrderID, orderNo, in.Remark, now, id)
 			return wrapErr(err, "update payment")
 		}
@@ -204,7 +209,7 @@ func (s *Store) SavePayment(ctx context.Context, id int64, in PaymentInput, user
 			   pay_date, amount, method, order_type, order_id, order_no, status, remark,
 			   created_by, created_by_name, created_at, updated_at)
 			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)`,
-			no, in.Type, in.PartnerID, partnerName, in.AccountID, acc.Name, in.PayDate, in.Amount,
+			no, in.Type, in.PartnerID, partnerName, in.AccountID, accName, in.PayDate, in.Amount,
 			in.Method, in.OrderType, in.OrderID, orderNo, in.Remark, user.ID, user.Name, now, now)
 		if err != nil {
 			return wrapErr(err, "insert payment")
@@ -318,15 +323,17 @@ func (s *Store) ConfirmPayment(ctx context.Context, id int64, user OpUser) error
 			}
 		}
 
-		// 账户余额
-		delta := int64(p.Amount)
-		if p.Type == model.PayTypePayment {
-			delta = -delta
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE accounts SET balance = balance + ?, updated_at=? WHERE id=?`,
-			delta, model.Now(), p.AccountID); err != nil {
-			return err
+		// 账户余额：往来冲抵只核销应收/应付，不产生真实现金流动。
+		if p.Method != "offset" {
+			delta := int64(p.Amount)
+			if p.Type == model.PayTypePayment {
+				delta = -delta
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE accounts SET balance = balance + ?, updated_at=? WHERE id=?`,
+				delta, model.Now(), p.AccountID); err != nil {
+				return err
+			}
 		}
 
 		_, err = tx.ExecContext(ctx,
@@ -365,14 +372,16 @@ func (s *Store) VoidPayment(ctx context.Context, id int64, user OpUser) error {
 					return err
 				}
 			}
-			delta := -int64(p.Amount)
-			if p.Type == model.PayTypePayment {
-				delta = -delta
-			}
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE accounts SET balance = balance + ?, updated_at=? WHERE id=?`,
-				delta, model.Now(), p.AccountID); err != nil {
-				return err
+			if p.Method != "offset" {
+				delta := -int64(p.Amount)
+				if p.Type == model.PayTypePayment {
+					delta = -delta
+				}
+				if _, err := tx.ExecContext(ctx,
+					`UPDATE accounts SET balance = balance + ?, updated_at=? WHERE id=?`,
+					delta, model.Now(), p.AccountID); err != nil {
+					return err
+				}
 			}
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE payments SET status=2, updated_at=? WHERE id=?`, model.Now(), id)

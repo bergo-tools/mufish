@@ -78,6 +78,7 @@ export default function ReportsPage() {
   const [accountId, setAccountId] = useState('');
   const [arapType, setArapType] = useState('receivable');
   const [keyword, setKeyword] = useState('');
+  const [partnerKw, setPartnerKw] = useState('');
 
   // 下拉数据：仓库 / 分类 / 客户 / 供应商 / 资金账户。
   const options = useAsync(async () => {
@@ -98,6 +99,23 @@ export default function ReportsPage() {
   }, []);
 
   const opt = options.data || {};
+
+  // 往来单位下拉默认最多 300 条；报表筛选需要能搜索到更后面的单位。
+  const searchReportPartners = async () => {
+    const kind = tab === 'salesDetail' ? 'customer' : 'supplier';
+    try {
+      const partners = await Api.partnerOptions(kind, partnerKw);
+      options.setData((prev) => {
+        const key = kind === 'customer' ? 'customers' : 'suppliers';
+        const merged = new Map();
+        (((prev || {})[key]) || []).forEach((p) => merged.set(p.id, p));
+        (partners || []).forEach((p) => merged.set(p.id, p));
+        return { ...(prev || {}), [key]: Array.from(merged.values()) };
+      });
+    } catch (e) {
+      notifyError(e);
+    }
+  };
 
   // 按当前页签加载数据（数组型报表）。
   const report = useAsync(async () => {
@@ -140,12 +158,15 @@ export default function ReportsPage() {
       });
     }
     if (tab === 'cashFlow') {
-      return Api.reportCashFlow({ from, to, account_id: accountId, limit: 500 });
+      return Api.reportCashFlow({ from, to, keyword, account_id: accountId, limit: 500 });
     }
     return [];
   }, [tab, from, to, warehouseId, categoryId, partnerId, accountId, arapType, keyword]);
 
   const rows = report.data || [];
+  const reportLimit =
+    tab === 'salesDetail' || tab === 'purchaseDetail' ? 1000 : tab === 'cashFlow' ? 500 : 0;
+  const truncated = reportLimit > 0 && rows.length >= reportLimit;
 
   // 导出处理：统一捕获异常并提示。
   const doExport = async (fn, params) => {
@@ -246,7 +267,7 @@ export default function ReportsPage() {
       { title: '联系人', key: 'contact', width: 100 },
       { title: '电话', key: 'phone', width: 130 },
       { title: '期初金额', key: 'init_amount', align: 'right', render: (r) => <Money value={r.init_amount} /> },
-      { title: '本期发生', key: 'doc_amount', align: 'right', render: (r) => <Money value={r.doc_amount} /> },
+      { title: '累计发生', key: 'doc_amount', align: 'right', render: (r) => <Money value={r.doc_amount} /> },
       { title: '已结算', key: 'paid_amount', align: 'right', render: (r) => <Money value={r.paid_amount} /> },
       {
         title: '期末余额',
@@ -264,7 +285,8 @@ export default function ReportsPage() {
     extra = exportBtn(Api.exportArAp, { type: arapType, keyword });
   } else if (tab === 'salesDetail' || tab === 'purchaseDetail') {
     columns = [
-      { title: '单据ID', key: 'doc_id', width: 80 },
+      { title: '单据编号', key: 'doc_no', width: 150, render: (r) => r.doc_no || '-' },
+      { title: '单据日期', key: 'doc_date', width: 104, render: (r) => fmtDate(r.doc_date) },
       { title: '商品编码', key: 'product_code', width: 120 },
       { title: '名称', key: 'product_name' },
       { title: '规格', key: 'spec', width: 110 },
@@ -324,15 +346,24 @@ export default function ReportsPage() {
   const showAccount = tab === 'cashFlow';
   const showKeyword =
     tab !== 'salesRank' && tab !== 'purchaseRank' && tab !== 'customerRank' && tab !== 'supplierRank';
-  // 应收应付、客户 / 供应商排行为全量统计，不使用日期范围。
-  const showDate = tab !== 'arap' && tab !== 'customerRank' && tab !== 'supplierRank';
+  // 应收应付是累计余额口径，不使用日期；其余报表（含客户/供应商排行）都按日期范围统计。
+  const showDate = tab !== 'arap';
 
   const partnerOptions = (tab === 'salesDetail' ? opt.customers : opt.suppliers) || [];
 
   return (
     <div class="page">
       <Card bodyClass="no-pad">
-        <Tabs tabs={TABS} active={tab} onChange={(k) => setTab(k)} />
+        <Tabs
+          tabs={TABS}
+          active={tab}
+          onChange={(k) => {
+            setTab(k);
+            // 客户 ID 与供应商 ID 不能跨页签复用，切换时统一清空。
+            setPartnerId('');
+            setPartnerKw('');
+          }}
+        />
 
         <Toolbar>
           {showDate ? (
@@ -355,12 +386,24 @@ export default function ReportsPage() {
             />
           ) : null}
           {showPartner ? (
-            <Select
-              value={partnerId}
-              onInput={setPartnerId}
-              options={partnerOptions.map((p) => ({ value: String(p.id), label: p.name }))}
-              placeholder={tab === 'salesDetail' ? '全部客户' : '全部供应商'}
-            />
+            <div class="row" style="gap:6px">
+              <Select
+                value={partnerId}
+                onInput={setPartnerId}
+                options={partnerOptions.map((p) => ({ value: String(p.id), label: p.name }))}
+                placeholder={tab === 'salesDetail' ? '全部客户' : '全部供应商'}
+              />
+              <SearchBox
+                value={partnerKw}
+                onInput={setPartnerKw}
+                onSearch={searchReportPartners}
+                placeholder={tab === 'salesDetail' ? '搜索客户' : '搜索供应商'}
+                width={160}
+              />
+              <Button size="sm" icon="search" onClick={searchReportPartners}>
+                搜索
+              </Button>
+            </div>
           ) : null}
           {showAccount ? (
             <Select
@@ -403,6 +446,11 @@ export default function ReportsPage() {
         extra={extra}
         bodyClass="no-pad"
       >
+        {truncated ? (
+          <div class="muted small" style="padding:8px 14px">
+            <Tag color="orange">已截断</Tag> 当前报表最多显示 {reportLimit} 条，请缩小日期范围。
+          </div>
+        ) : null}
         <Table
           columns={columns}
           data={rows}

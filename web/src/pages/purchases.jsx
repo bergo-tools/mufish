@@ -261,6 +261,23 @@ export default function PurchasesPage({ route }) {
       notifyError('明细行数量必须大于 0');
       return;
     }
+    if (rows.some((it) => num(it.price) < 0)) {
+      notifyError('明细行单价不能为负数');
+      return;
+    }
+    if (num(form.discount_amount) < 0) {
+      notifyError('优惠金额不能为负数');
+      return;
+    }
+    if (num(form.other_fee) < 0) {
+      notifyError('其他费用不能为负数');
+      return;
+    }
+    const submittedTotal = rows.reduce((s, it) => s + num(it.qty) * num(it.price), 0);
+    if (num(form.discount_amount) > submittedTotal) {
+      notifyError('优惠金额不能超过明细金额');
+      return;
+    }
     const payload = {
       supplier_id: Number(form.supplier_id),
       warehouse_id: Number(form.warehouse_id),
@@ -565,6 +582,9 @@ export default function PurchasesPage({ route }) {
             />
           </div>
 
+          <p class="muted small" style="padding:0 14px; margin-top:6px">
+            采购优惠/费用是否计入库存成本由「系统参数 → 业务开关」控制，默认计入。
+          </p>
           <div class="doc-total">
             <div class="doc-total-item">
               <span>合计数量</span>

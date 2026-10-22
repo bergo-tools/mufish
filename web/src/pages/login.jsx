@@ -1,6 +1,8 @@
 import { useState } from 'preact/hooks';
 import { Api } from '../api.js';
-import { notifyError, session, setSession, useStore } from '../store.js';
+import { navigate } from '../router.js';
+import { firstAllowed } from '../nav.js';
+import { session, setSession, useStore } from '../store.js';
 
 export default function LoginPage() {
   const { meta } = useStore(session);
@@ -20,6 +22,7 @@ export default function LoginPage() {
     try {
       const res = await Api.login(username.trim(), password);
       setSession(res.user, res.permissions || []);
+      navigate(firstAllowed(), true);
     } catch (err) {
       setError(err.message || '登录失败');
       setLoading(false);

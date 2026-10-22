@@ -264,7 +264,7 @@ func TestStockQueriesAndReports(t *testing.T) {
 	if err := st.ConfirmPayment(ctx, receipt, user); err != nil {
 		t.Fatalf("确认收款单失败: %v", err)
 	}
-	cash, err := st.CashFlow(ctx, model.Today(), model.Today(), accounts[0].ID, 10)
+	cash, err := st.CashFlow(ctx, model.Today(), model.Today(), "", accounts[0].ID, 10)
 	if err != nil || len(cash) != 1 || cash[0].Amount != model.YuanFrom(20) {
 		t.Fatalf("资金流水不正确: %+v / %v", cash, err)
 	}

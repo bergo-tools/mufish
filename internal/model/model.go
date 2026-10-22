@@ -174,6 +174,8 @@ func DocStatusText(s int) string {
 type OrderItem struct {
 	ID          int64  `json:"id" db:"id"`
 	DocID       int64  `json:"doc_id" db:"doc_id"`
+	DocNo       string `json:"doc_no" db:"doc_no"`
+	DocDate     string `json:"doc_date" db:"doc_date"`
 	ProductID   int64  `json:"product_id" db:"product_id"`
 	ProductCode string `json:"product_code" db:"product_code"`
 	ProductName string `json:"product_name" db:"product_name"`

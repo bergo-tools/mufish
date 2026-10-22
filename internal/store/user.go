@@ -120,27 +120,34 @@ func (s *Store) UpdateUser(ctx context.Context, id int64, in UserInput) error {
 		return fmt.Errorf("%w: 内置超级管理员不可停用", ErrBadRequest)
 	}
 	now := model.Now()
-	if strings.TrimSpace(in.Password) != "" {
-		if len(in.Password) < 6 {
-			return fmt.Errorf("%w: 口令至少 6 位", ErrBadRequest)
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		if strings.TrimSpace(in.Password) != "" {
+			if len(in.Password) < 6 {
+				return fmt.Errorf("%w: 口令至少 6 位", ErrBadRequest)
+			}
+			hash, err := auth.HashPassword(in.Password)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE users SET password=?, name=?, phone=?, email=?, role_id=?, status=?, remark=?, updated_at=? WHERE id=?`,
+				hash, in.Name, in.Phone, in.Email, in.RoleID, normStatus(in.Status), in.Remark, now, id); err != nil {
+				return wrapErr(err, "update user")
+			}
+			// 口令变化后必须让该用户所有旧会话失效；管理员在“编辑用户”里
+			// 改口令与“重置口令”应保持同样的安全语义。
+			if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id=?`, id); err != nil {
+				return err
+			}
+			return nil
 		}
-		hash, err := auth.HashPassword(in.Password)
-		if err != nil {
-			return err
-		}
-		if _, err := s.db.ExecContext(ctx,
-			`UPDATE users SET password=?, name=?, phone=?, email=?, role_id=?, status=?, remark=?, updated_at=? WHERE id=?`,
-			hash, in.Name, in.Phone, in.Email, in.RoleID, normStatus(in.Status), in.Remark, now, id); err != nil {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE users SET name=?, phone=?, email=?, role_id=?, status=?, remark=?, updated_at=? WHERE id=?`,
+			in.Name, in.Phone, in.Email, in.RoleID, normStatus(in.Status), in.Remark, now, id); err != nil {
 			return wrapErr(err, "update user")
 		}
 		return nil
-	}
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE users SET name=?, phone=?, email=?, role_id=?, status=?, remark=?, updated_at=? WHERE id=?`,
-		in.Name, in.Phone, in.Email, in.RoleID, normStatus(in.Status), in.Remark, now, id); err != nil {
-		return wrapErr(err, "update user")
-	}
-	return nil
+	})
 }
 
 // DeleteUser 删除用户。
@@ -177,8 +184,16 @@ func (s *Store) UpdatePassword(ctx context.Context, id int64, oldPwd, newPwd str
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE users SET password=?, updated_at=? WHERE id=?`, hash, model.Now(), id)
-	return wrapErr(err, "update password")
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET password=?, updated_at=? WHERE id=?`, hash, model.Now(), id); err != nil {
+			return wrapErr(err, "update password")
+		}
+		// 口令变化后让所有已有会话失效，避免旧会话继续使用。
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id=?`, id); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // ResetPassword 由管理员重置口令。

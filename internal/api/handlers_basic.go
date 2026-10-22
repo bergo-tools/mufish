@@ -3,7 +3,9 @@ package api
 import (
 	"encoding/csv"
 	"fmt"
+	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -40,13 +42,65 @@ func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	trend, err := h.st.Trend(r.Context(), 14)
-	if err != nil {
-		return err
+	canSales := hasAnyPerm(r, "sales:view", "report:view")
+	canPurchase := hasAnyPerm(r, "purchase:view", "report:view")
+	canStock := hasAnyPerm(r, "stock:view", "report:view")
+	canFinance := hasAnyPerm(r, "payment:view", "report:view")
+	canAccount := hasAnyPerm(r, "account:view", "payment:view", "report:view")
+	canProduct := hasAnyPerm(r, "product:view", "stock:view", "report:view")
+	canPartner := hasAnyPerm(r, "partner:view", "report:view")
+
+	// 看板是聚合页，但仍要遵守模块权限：没有对应权限时不把数据下发给前端。
+	if !canSales {
+		summary.TodaySales = 0
+		summary.MonthSales = 0
+		summary.MonthProfit = 0
 	}
-	alerts, err := h.st.LowStockList(r.Context(), 0, 8)
-	if err != nil {
-		return err
+	if !canPurchase {
+		summary.TodayPurchase = 0
+		summary.MonthPurchase = 0
+	}
+	if !canStock {
+		summary.StockAmount = 0
+		summary.StockKinds = 0
+		summary.LowStockCount = 0
+	}
+	if !canFinance {
+		summary.Receivable = 0
+		summary.Payable = 0
+	}
+	if !canAccount {
+		summary.AccountTotal = 0
+	}
+	if !canProduct {
+		summary.ProductCount = 0
+	}
+	if !canPartner {
+		summary.PartnerCount = 0
+	}
+
+	trend := []model.TrendPoint{}
+	if canSales || canPurchase {
+		trend, err = h.st.Trend(r.Context(), 14)
+		if err != nil {
+			return err
+		}
+		for i := range trend {
+			if !canSales {
+				trend[i].Sales = 0
+				trend[i].Profit = 0
+			}
+			if !canPurchase {
+				trend[i].Purchase = 0
+			}
+		}
+	}
+	alerts := []model.Stock{}
+	if canStock {
+		alerts, err = h.st.LowStockList(r.Context(), 0, 8)
+		if err != nil {
+			return err
+		}
 	}
 	type recent struct {
 		ID      int64       `json:"id"`
@@ -57,26 +111,50 @@ func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) error {
 		Status  int         `json:"status"`
 		Date    string      `json:"date"`
 	}
-	recentSales, err := h.st.ListSales(r.Context(), store.SalesQuery{Status: -1, Page: 1, Size: 6})
-	if err != nil {
-		return err
-	}
-	recentPurchase, err := h.st.ListPurchases(r.Context(), store.PurchaseQuery{Status: -1, Page: 1, Size: 6})
-	if err != nil {
-		return err
-	}
 	list := make([]recent, 0, 12)
-	for _, s := range recentSales.List {
-		list = append(list, recent{s.ID, "sales", s.OrderNo, s.CustomerName, s.SettleAmount, s.Status, s.OrderDate})
+	if canSales {
+		recentSales, err := h.st.ListSales(r.Context(), store.SalesQuery{Status: -1, Page: 1, Size: 6})
+		if err != nil {
+			return err
+		}
+		for _, s := range recentSales.List {
+			list = append(list, recent{s.ID, "sales", s.OrderNo, s.CustomerName, s.SettleAmount, s.Status, s.OrderDate})
+		}
 	}
-	for _, p := range recentPurchase.List {
-		list = append(list, recent{p.ID, "purchase", p.OrderNo, p.SupplierName, p.SettleAmount, p.Status, p.OrderDate})
+	if canPurchase {
+		recentPurchase, err := h.st.ListPurchases(r.Context(), store.PurchaseQuery{Status: -1, Page: 1, Size: 6})
+		if err != nil {
+			return err
+		}
+		for _, p := range recentPurchase.List {
+			list = append(list, recent{p.ID, "purchase", p.OrderNo, p.SupplierName, p.SettleAmount, p.Status, p.OrderDate})
+		}
 	}
+	// 销售和采购分别取最近 6 条后合并，必须再按业务日期统一排序，
+	// 否则「最近单据」实际上只是「6 条销售 + 6 条采购」。
+	sort.SliceStable(list, func(i, j int) bool {
+		if list[i].Date != list[j].Date {
+			return list[i].Date > list[j].Date
+		}
+		if list[i].ID != list[j].ID {
+			return list[i].ID > list[j].ID
+		}
+		return list[i].DocType > list[j].DocType
+	})
 	writeOK(w, map[string]any{
 		"summary": summary,
 		"trend":   trend,
 		"alerts":  alerts,
 		"recent":  list,
+		"visibility": map[string]bool{
+			"sales":    canSales,
+			"purchase": canPurchase,
+			"stock":    canStock,
+			"finance":  canFinance,
+			"account":  canAccount,
+			"product":  canProduct,
+			"partner":  canPartner,
+		},
 	})
 	return nil
 }
@@ -311,8 +389,15 @@ func (h *Handler) importProducts(w http.ResponseWriter, r *http.Request) error {
 	}
 	okCount, failCount := 0, 0
 	var messages []string
+	fail := func(line int, format string, args ...any) {
+		failCount++
+		if len(messages) < 8 {
+			messages = append(messages, fmt.Sprintf(format, args...))
+		}
+	}
 	for i, rec := range records {
 		if len(rec) < 2 || strings.TrimSpace(rec[1]) == "" {
+			fail(i+2, "第 %d 行：商品名称不能为空", i+2)
 			continue
 		}
 		get := func(idx int) string {
@@ -321,6 +406,21 @@ func (h *Handler) importProducts(w http.ResponseWriter, r *http.Request) error {
 			}
 			return ""
 		}
+		purchasePrice, err := parsePrice(get(7))
+		if err != nil {
+			fail(i+2, "第 %d 行：参考进价%v", i+2, err)
+			continue
+		}
+		salePrice, err := parsePrice(get(8))
+		if err != nil {
+			fail(i+2, "第 %d 行：参考售价%v", i+2, err)
+			continue
+		}
+		safetyStock, err := parseQty(get(9))
+		if err != nil {
+			fail(i+2, "第 %d 行：安全库存%v", i+2, err)
+			continue
+		}
 		input := store.ProductInput{
 			Code:          get(0),
 			Name:          get(1),
@@ -328,9 +428,9 @@ func (h *Handler) importProducts(w http.ResponseWriter, r *http.Request) error {
 			Unit:          defaultStr(get(3), "个"),
 			Barcode:       get(5),
 			Brand:         get(6),
-			PurchasePrice: parsePrice(get(7)),
-			SalePrice:     parsePrice(get(8)),
-			SafetyStock:   parseQty(get(9)),
+			PurchasePrice: purchasePrice,
+			SalePrice:     salePrice,
+			SafetyStock:   safetyStock,
 			Status:        1,
 		}
 		if input.Unit == "" {
@@ -339,19 +439,13 @@ func (h *Handler) importProducts(w http.ResponseWriter, r *http.Request) error {
 		if categoryName := get(4); categoryName != "" {
 			categoryID, ok := catIDs[categoryName]
 			if !ok {
-				failCount++
-				if len(messages) < 8 {
-					messages = append(messages, fmt.Sprintf("第 %d 行：分类 %q 不存在", i+2, categoryName))
-				}
+				fail(i+2, "第 %d 行：分类 %q 不存在", i+2, categoryName)
 				continue
 			}
 			input.CategoryID = categoryID
 		}
 		if _, err := h.st.SaveProduct(r.Context(), 0, input); err != nil {
-			failCount++
-			if len(messages) < 8 {
-				messages = append(messages, fmt.Sprintf("第 %d 行：%v", i+2, err))
-			}
+			fail(i+2, "第 %d 行：%v", i+2, err)
 			continue
 		}
 		okCount++
@@ -409,9 +503,13 @@ func (h *Handler) savePartner(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	id := int64(0)
+	var before model.Partner
 	if r.Method == http.MethodPut {
 		var err error
 		if id, err = pathID(r); err != nil {
+			return err
+		}
+		if before, err = h.st.GetPartner(r.Context(), id); err != nil {
 			return err
 		}
 	}
@@ -419,8 +517,21 @@ func (h *Handler) savePartner(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	detail := fmt.Sprintf("%s %s", in.Code, in.Name)
+	if id > 0 {
+		var changes []string
+		if before.InitReceivable != in.InitReceivable {
+			changes = append(changes, fmt.Sprintf("期初应收 %s → %s", before.InitReceivable, in.InitReceivable))
+		}
+		if before.InitPayable != in.InitPayable {
+			changes = append(changes, fmt.Sprintf("期初应付 %s → %s", before.InitPayable, in.InitPayable))
+		}
+		if len(changes) > 0 {
+			detail += "；" + strings.Join(changes, "；")
+		}
+	}
 	h.st.AddLog(r.Context(), user(r).ID, user(r).Username, "往来单位", actionText(id),
-		fmt.Sprintf("%s %s", in.Code, in.Name), clientIP(r))
+		detail, clientIP(r))
 	writeOK(w, map[string]any{"id": newID})
 	return nil
 }
@@ -523,9 +634,13 @@ func (h *Handler) saveAccount(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	id := int64(0)
+	var before model.Account
 	if r.Method == http.MethodPut {
 		var err error
 		if id, err = pathID(r); err != nil {
+			return err
+		}
+		if before, err = h.st.GetAccount(r.Context(), id); err != nil {
 			return err
 		}
 	}
@@ -533,7 +648,11 @@ func (h *Handler) saveAccount(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	h.st.AddLog(r.Context(), user(r).ID, user(r).Username, "资金账户", actionText(id), in.Name, clientIP(r))
+	detail := in.Name
+	if id > 0 && before.Balance != in.Balance {
+		detail += fmt.Sprintf("；余额 %s → %s", before.Balance, in.Balance)
+	}
+	h.st.AddLog(r.Context(), user(r).ID, user(r).Username, "资金账户", actionText(id), detail, clientIP(r))
 	writeOK(w, map[string]any{"id": newID})
 	return nil
 }
@@ -569,20 +688,40 @@ func defaultStr(v, def string) string {
 	return strings.TrimSpace(v)
 }
 
-func parsePrice(s string) model.Price {
-	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+func parsePrice(s string) (model.Price, error) {
+	f, err := parseCSVNumber(s)
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return model.PriceFrom(f)
+	return model.PriceFrom(f), nil
 }
 
-func parseQty(s string) model.Qty {
-	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+func parseQty(s string) (model.Qty, error) {
+	f, err := parseCSVNumber(s)
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return model.QtyFrom(f)
+	return model.QtyFrom(f), nil
+}
+
+// parseCSVNumber 解析 CSV 中的数字；空单元格视为 0，其余非法值必须报错，
+// 不能静默变成 0，否则价格列写错会以 0 成本入库。
+func parseCSVNumber(s string) (float64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, fmt.Errorf("不是有效数字（%q）", s)
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("不是有效数字（%q）", s)
+	}
+	if f < 0 {
+		return 0, fmt.Errorf("不能为负数（%q）", s)
+	}
+	return f, nil
 }
 
 // writeCSV 输出带 BOM 的 CSV（Excel 友好）。
@@ -592,8 +731,40 @@ func writeCSV(w http.ResponseWriter, filename string, rows [][]string) {
 		"attachment; filename="+filename+".csv; filename*=UTF-8''"+urlEncode(filename)+".csv")
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
 	cw := csv.NewWriter(w)
-	_ = cw.WriteAll(rows)
+	for _, row := range rows {
+		safe := make([]string, len(row))
+		for i, cell := range row {
+			safe[i] = csvSafe(cell)
+		}
+		if err := cw.Write(safe); err != nil {
+			return
+		}
+	}
 	cw.Flush()
+}
+
+// csvSafe 防止 Excel 把用户输入（商品名、备注等）当成公式执行；
+// 纯负数金额不转义，避免报表里的数字变成文本。
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=':
+		return "'" + s
+	case '+':
+		return "'" + s
+	case '@':
+		return "'" + s
+	case '-':
+		if _, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
+			return s
+		}
+		return "'" + s
+	case '\t', '\r', '\n':
+		return "'" + s
+	}
+	return s
 }
 
 func urlEncode(s string) string {

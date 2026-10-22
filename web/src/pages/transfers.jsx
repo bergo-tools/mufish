@@ -1,5 +1,5 @@
 // 库存调拨：调拨单查询、录入、确认与作废。
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { Api } from '../api.js';
 import { can, notifyError, notifyOK } from '../store.js';
 import { docStatus, fmtDate, fmtDateTime, fmtQty, today } from '../format.js';
@@ -59,16 +59,21 @@ export default function TransfersPage({ route }) {
   }, []);
   const warehouseOptions = (warehouses.data || []).map((w) => ({ value: String(w.id), label: w.name }));
 
-  // 商品下拉（最多 300 条）。
-  const products = useAsync(async () => {
+  // 商品下拉：默认最多 300 条，支持关键字搜索，避免超过 300 个商品后
+  // 排在后面的商品永远无法选择。
+  const [productKw, setProductKw] = useState('');
+  const [productList, setProductList] = useState([]);
+  const loadProducts = async (kw) => {
     try {
-      return (await Api.productOptions('')) || [];
+      setProductList((await Api.productOptions(kw || '')) || []);
     } catch (e) {
       notifyError(e);
-      throw e;
     }
+  };
+  useEffect(() => {
+    loadProducts('');
   }, []);
-  const productOptions = (products.data || []).map((p) => ({
+  const productOptions = productList.map((p) => ({
     value: String(p.id),
     label: `${p.code} ${p.name}${p.spec ? ' / ' + p.spec : ''}`,
   }));
@@ -133,6 +138,17 @@ export default function TransfersPage({ route }) {
 
   const updateRow = (index, patch) => {
     setRows((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+  };
+
+  const pickProduct = (index, productId) => {
+    const p = productList.find((x) => String(x.id) === String(productId));
+    updateRow(index, {
+      product_id: productId,
+      product_code: p ? p.code || '' : '',
+      product_name: p ? p.name || '' : '',
+      spec: p ? p.spec || '' : '',
+      unit: p ? p.unit || '' : '',
+    });
   };
 
   // 单行商品下拉：编辑旧单时若商品已停用或超出下拉范围，补一条显示项。
@@ -428,11 +444,23 @@ export default function TransfersPage({ route }) {
         ) : null}
 
         <div class="row-between mt-12">
-          <span class="muted small">单价可留 0，确认调拨时按调出仓库的库存成本自动结转。</span>
+          <div class="row">
+            <SearchBox
+              value={productKw}
+              onInput={setProductKw}
+              onSearch={() => loadProducts(productKw)}
+              placeholder="搜索商品，回车刷新下拉"
+              width={240}
+            />
+            <Button size="sm" icon="search" onClick={() => loadProducts(productKw)}>
+              搜索商品
+            </Button>
+          </div>
           <Button size="sm" icon="plus" onClick={addRow}>
             添加一行
           </Button>
         </div>
+        <p class="muted small mt-8">单价可留 0，确认调拨时按调出仓库的库存成本自动结转。</p>
 
         <div class="doc-items-table mt-8">
           <Table
@@ -446,7 +474,7 @@ export default function TransfersPage({ route }) {
                 render: (r, i) => (
                   <Select
                     value={r.product_id}
-                    onInput={(v) => updateRow(i, { product_id: v })}
+                    onInput={(v) => pickProduct(i, v)}
                     options={rowProductOptions(r)}
                     placeholder="请选择商品"
                   />

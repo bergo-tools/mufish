@@ -28,6 +28,10 @@ type stockMoveReq struct {
 	BizDate     string // 业务日期（单据日期）
 	Remark      string
 	User        OpUser
+	// UseAmount 为 true 时入库金额使用 Amount，而不是 Qty×Price。
+	// 用于采购运费/折扣按明细分摊后的精确金额，避免单价四舍五入导致分差。
+	UseAmount bool
+	Amount    model.Money
 	// Strict 为 true 时库存不足则报错。
 	Strict bool
 }
@@ -65,7 +69,11 @@ func applyStock(ctx context.Context, tx *sql.Tx, req stockMoveReq) (stockMoveRes
 
 	if delta > 0 {
 		movePrice = int64(req.Price)
-		moveAmount = int64(model.AmountOf(req.Qty, req.Price))
+		if req.UseAmount {
+			moveAmount = int64(req.Amount)
+		} else {
+			moveAmount = int64(model.AmountOf(req.Qty, req.Price))
+		}
 		if moveAmount < 0 {
 			moveAmount = -moveAmount
 		}
@@ -78,7 +86,16 @@ func applyStock(ctx context.Context, tx *sql.Tx, req stockMoveReq) (stockMoveRes
 	} else {
 		movePrice = curPrice
 		outQty := -delta
-		moveAmount = int64(math.Round(float64(curPrice) * outQty / 100))
+		if req.UseAmount {
+			// 冲销原流水时必须按原金额扣减，不能按当前移动平均价重新计算；
+			// 否则原入库后又有其他入库时，剩余结存成本会被算错。
+			moveAmount = int64(req.Amount)
+			if moveAmount < 0 {
+				moveAmount = -moveAmount
+			}
+		} else {
+			moveAmount = int64(math.Round(float64(curPrice) * outQty / 100))
+		}
 		if moveAmount > curAmount && curQty > 0 {
 			// 成本不足时按现有结存金额冲减，避免出现负库存金额
 			moveAmount = curAmount
@@ -93,7 +110,13 @@ func applyStock(ctx context.Context, tx *sql.Tx, req stockMoveReq) (stockMoveRes
 				newAmount = 0
 			}
 		}
-		newPrice = curPrice
+		if req.UseAmount && newQty > 0 {
+			// 扣减原金额后，剩余结存单价需要重新计算；普通出库仍沿用
+			// 当前移动平均价，保持原有成本口径不变。
+			newPrice = int64(math.Round(float64(newAmount) * 100 / newQty))
+		} else {
+			newPrice = curPrice
+		}
 	}
 
 	if req.Strict && newQty < 0 {
@@ -144,17 +167,22 @@ func reverseMovesByBiz(ctx context.Context, tx *sql.Tx, bizType string, bizID in
 		if m.Qty == 0 {
 			continue
 		}
+		// 冲销本身也必须做库存校验：原入库单被作废时是出库，若库存已
+		// 被后续销售/调拨消耗，继续冲销会静默产生负库存。
 		_, err := applyStock(ctx, tx, stockMoveReq{
 			WarehouseID: m.WarehouseID,
 			ProductID:   m.ProductID,
 			Qty:         model.Qty(-m.Qty),
 			Price:       m.Price,
+			UseAmount:   true,
+			Amount:      m.Amount,
 			BizType:     m.BizType,
 			BizID:       m.BizID,
 			BizNo:       m.BizNo,
 			BizDate:     m.BizDate,
 			Remark:      "作废冲销",
 			User:        user,
+			Strict:      true,
 		})
 		if err != nil {
 			return err
@@ -309,6 +337,15 @@ func (s *Store) SavePurchase(ctx context.Context, id int64, in PurchaseInput, us
 		if it.Qty <= 0 {
 			return 0, fmt.Errorf("%w: 第 %d 行数量必须大于 0", ErrBadRequest, i+1)
 		}
+		if it.Price < 0 {
+			return 0, fmt.Errorf("%w: 第 %d 行单价不能为负数", ErrBadRequest, i+1)
+		}
+	}
+	if in.DiscountAmount < 0 {
+		return 0, fmt.Errorf("%w: 优惠金额不能为负数", ErrBadRequest)
+	}
+	if in.OtherFee < 0 {
+		return 0, fmt.Errorf("%w: 其他费用不能为负数", ErrBadRequest)
 	}
 	in.OrderDate = model.NormDate(in.OrderDate)
 	now := model.Now()
@@ -318,11 +355,15 @@ func (s *Store) SavePurchase(ctx context.Context, id int64, in PurchaseInput, us
 		if err != nil {
 			return err
 		}
-		wh, err := loadWarehouseName(ctx, tx, in.WarehouseID)
+		whID, wh, err := loadWarehouse(ctx, tx, in.WarehouseID)
 		if err != nil {
 			return err
 		}
+		in.WarehouseID = whID
 		t := calcTotals(in.Items, in.DiscountAmount, in.OtherFee)
+		if t.DiscountAmount > t.TotalAmount {
+			return fmt.Errorf("%w: 优惠金额不能超过明细金额", ErrBadRequest)
+		}
 
 		if id > 0 {
 			var status int
@@ -389,9 +430,110 @@ func insertPurchaseItems(ctx context.Context, tx *sql.Tx, orderID int64, items [
 	return nil
 }
 
+// purchaseCostLine 采购明细分摊后的入库成本。
+type purchaseCostLine struct {
+	Amount model.Money
+	Price  model.Price
+}
+
+// allocatePurchaseCost 把采购单头的优惠金额和其他费用按明细金额比例分摊到每个
+// 明细行。优惠冲减成本，其他费用（运费/装卸/保险等）计入成本。
+//
+// 分到「分」后使用最大余数法补齐尾差，保证各行净额之和精确等于
+// 合计金额 - 优惠 + 其他费用。设置关闭时调用方不会使用本函数。
+func allocatePurchaseCost(items []model.OrderItem, discount, otherFee model.Money) ([]purchaseCostLine, error) {
+	out := make([]purchaseCostLine, len(items))
+	if len(items) == 0 {
+		return out, nil
+	}
+	basis := make([]int64, len(items))
+	var total model.Money
+	for i, it := range items {
+		amount := it.Amount
+		if amount == 0 {
+			amount = model.AmountOf(it.Qty, it.Price)
+		}
+		if amount < 0 {
+			return nil, fmt.Errorf("%w: 采购明细金额不能为负数", ErrBadRequest)
+		}
+		out[i].Amount = amount
+		basis[i] = int64(amount)
+		total += amount
+	}
+	if discount > total {
+		return nil, fmt.Errorf("%w: 优惠金额不能超过明细金额", ErrBadRequest)
+	}
+
+	adjustment := int64(otherFee) - int64(discount)
+	if adjustment != 0 {
+		var basisTotal int64
+		for _, b := range basis {
+			basisTotal += b
+		}
+		// 明细金额全为 0 时（例如赠品/样品）退化为按数量分摊，保证运费仍能进成本。
+		if basisTotal == 0 {
+			for i, it := range items {
+				qty := int64(math.Round(it.Qty.Float() * 10000))
+				if qty < 0 {
+					qty = 0
+				}
+				basis[i] = qty
+				basisTotal += qty
+			}
+		}
+		if basisTotal == 0 {
+			return nil, fmt.Errorf("%w: 明细金额和数量都为 0，无法分摊采购费用", ErrBadRequest)
+		}
+
+		absAdj := adjustment
+		sign := int64(1)
+		if absAdj < 0 {
+			sign = -1
+			absAdj = -absAdj
+		}
+		alloc := make([]int64, len(items))
+		remainders := make([]float64, len(items))
+		var used int64
+		for i, b := range basis {
+			part := absAdj * b / basisTotal
+			alloc[i] = part
+			used += part
+			remainders[i] = float64((absAdj*b)%basisTotal) / float64(basisTotal)
+		}
+		// 最大余数法：把剩余的分逐个给余数最大的行。
+		for left := absAdj - used; left > 0; left-- {
+			idx := -1
+			for i := range remainders {
+				if remainders[i] >= 0 && (idx == -1 || remainders[i] > remainders[idx]) {
+					idx = i
+				}
+			}
+			if idx == -1 {
+				idx = 0
+			}
+			alloc[idx]++
+			remainders[idx] = -1
+		}
+		for i := range out {
+			net := int64(out[i].Amount) + sign*alloc[i]
+			if net < 0 {
+				net = 0
+			}
+			out[i].Amount = model.Money(net)
+		}
+	}
+	for i := range out {
+		if items[i].Qty.Float() > 0 {
+			out[i].Price = model.Price(math.Round(float64(out[i].Amount) * 100 / items[i].Qty.Float()))
+		}
+	}
+	return out, nil
+}
+
 // ConfirmPurchase 采购入库确认：增加库存。
 func (s *Store) ConfirmPurchase(ctx context.Context, id int64, user OpUser) error {
 	followPrice := s.SettingBool(ctx, "purchase_price_follow", true)
+	includeCost := s.SettingBool(ctx, "purchase_cost_include", true)
 	return s.Tx(ctx, func(tx *sql.Tx) error {
 		o, ok, err := queryRow[model.PurchaseOrder](ctx, tx,
 			`SELECT `+purchaseCols+` FROM purchase_orders o WHERE o.id=?`, id)
@@ -413,8 +555,16 @@ func (s *Store) ConfirmPurchase(ctx context.Context, id int64, user OpUser) erro
 		if err != nil {
 			return err
 		}
-		for _, it := range items {
-			if _, err := applyStock(ctx, tx, stockMoveReq{
+		var costs []purchaseCostLine
+		if includeCost {
+			var err error
+			costs, err = allocatePurchaseCost(items, o.DiscountAmount, o.OtherFee)
+			if err != nil {
+				return err
+			}
+		}
+		for i, it := range items {
+			req := stockMoveReq{
 				WarehouseID: o.WarehouseID,
 				ProductID:   it.ProductID,
 				Qty:         it.Qty,
@@ -424,7 +574,13 @@ func (s *Store) ConfirmPurchase(ctx context.Context, id int64, user OpUser) erro
 				BizNo:       o.OrderNo,
 				BizDate:     o.OrderDate,
 				User:        user,
-			}); err != nil {
+			}
+			if includeCost {
+				req.Price = costs[i].Price
+				req.Amount = costs[i].Amount
+				req.UseAmount = true
+			}
+			if _, err := applyStock(ctx, tx, req); err != nil {
 				return err
 			}
 			if followPrice && it.Price > 0 {
@@ -576,6 +732,15 @@ func (s *Store) SaveSales(ctx context.Context, id int64, in SalesInput, user OpU
 		if it.Qty <= 0 {
 			return 0, fmt.Errorf("%w: 第 %d 行数量必须大于 0", ErrBadRequest, i+1)
 		}
+		if it.Price < 0 {
+			return 0, fmt.Errorf("%w: 第 %d 行单价不能为负数", ErrBadRequest, i+1)
+		}
+	}
+	if in.DiscountAmount < 0 {
+		return 0, fmt.Errorf("%w: 优惠金额不能为负数", ErrBadRequest)
+	}
+	if in.OtherFee < 0 {
+		return 0, fmt.Errorf("%w: 其他费用不能为负数", ErrBadRequest)
 	}
 	in.OrderDate = model.NormDate(in.OrderDate)
 	now := model.Now()
@@ -585,11 +750,15 @@ func (s *Store) SaveSales(ctx context.Context, id int64, in SalesInput, user OpU
 		if err != nil {
 			return err
 		}
-		wh, err := loadWarehouseName(ctx, tx, in.WarehouseID)
+		whID, wh, err := loadWarehouse(ctx, tx, in.WarehouseID)
 		if err != nil {
 			return err
 		}
+		in.WarehouseID = whID
 		t := calcTotals(in.Items, in.DiscountAmount, in.OtherFee)
+		if t.DiscountAmount > t.TotalAmount {
+			return fmt.Errorf("%w: 优惠金额不能超过明细金额", ErrBadRequest)
+		}
 
 		if id > 0 {
 			var status int
@@ -835,29 +1004,31 @@ func loadPartnerForRole(ctx context.Context, tx *sql.Tx, id int64, role string) 
 	return name, nil
 }
 
-func loadWarehouseName(ctx context.Context, tx *sql.Tx, id int64) (string, error) {
+// loadWarehouse 解析仓库，并在未指定仓库（id=0）时回填默认仓库 ID。
+// 只返回名称会让单据头显示默认仓库、库存却写到 warehouse_id=0，必须同时返回 ID。
+func loadWarehouse(ctx context.Context, tx *sql.Tx, id int64) (int64, string, error) {
 	if id == 0 {
 		wh, ok, err := queryRow[model.Warehouse](ctx, tx,
 			`SELECT id, name FROM warehouses WHERE status=1 ORDER BY is_default DESC, sort, id LIMIT 1`)
 		if err != nil {
-			return "", err
+			return 0, "", err
 		}
 		if !ok || wh.ID == 0 {
-			return "", fmt.Errorf("%w: 请先建立仓库", ErrBadRequest)
+			return 0, "", fmt.Errorf("%w: 请先建立仓库", ErrBadRequest)
 		}
-		return wh.Name, nil
+		return wh.ID, wh.Name, nil
 	}
 	var name string
 	var status int
 	err := tx.QueryRowContext(ctx, `SELECT name, status FROM warehouses WHERE id=?`, id).Scan(&name, &status)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("%w: 仓库不存在", ErrBadRequest)
+		return 0, "", fmt.Errorf("%w: 仓库不存在", ErrBadRequest)
 	}
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
 	if status != 1 {
-		return "", fmt.Errorf("%w: 仓库已停用，请选择其他仓库", ErrBadRequest)
+		return 0, "", fmt.Errorf("%w: 仓库已停用，请选择其他仓库", ErrBadRequest)
 	}
-	return name, nil
+	return id, name, nil
 }

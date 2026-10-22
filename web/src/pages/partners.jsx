@@ -293,7 +293,7 @@ export default function PartnersPage({ route }) {
           <Field label="银行账号">
             <Input value={form.bank_account} onInput={setField('bank_account')} />
           </Field>
-          <Field label="信用额度">
+          <Field label="信用额度" hint="预留字段，暂不参与下单校验">
             <NumberInput value={form.credit_limit} onInput={setField('credit_limit')} min="0" />
           </Field>
           <Field label="期初应收">

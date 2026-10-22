@@ -1,7 +1,8 @@
 // 应用外壳：侧边栏导航 + 顶栏 + 路由分发。
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { navigate, useRoute } from './router.js';
-import { can, clearSession, notifyError, session, toasts, useStore } from './store.js';
+import { can, clearSession, session, toast, toasts, useStore } from './store.js';
+import { firstAllowed, findTitle, NAV, routePerm } from './nav.js';
 import { Api } from './api.js';
 import { Button, ConfirmHost, Icon, ToastHost } from './ui.jsx';
 
@@ -28,56 +29,6 @@ import SettingsPage from './pages/settings.jsx';
 import SystemPage from './pages/system.jsx';
 import ProfilePage from './pages/profile.jsx';
 
-// 导航配置：perm 为空表示登录后即可访问。
-const NAV = [
-  { group: '概览', items: [{ key: '/', label: '首页看板', icon: 'dashboard', perm: 'dashboard:view' }] },
-  {
-    group: '基础资料',
-    items: [
-      { key: '/products', label: '商品管理', icon: 'box', perm: 'product:view' },
-      { key: '/categories', label: '商品分类', icon: 'tag', perm: 'category:view' },
-      { key: '/partners', label: '往来单位', icon: 'users', perm: 'partner:view' },
-      { key: '/warehouses', label: '仓库管理', icon: 'warehouse', perm: 'warehouse:view' },
-      { key: '/accounts', label: '资金账户', icon: 'wallet', perm: 'account:view' },
-    ],
-  },
-  {
-    group: '采购销售',
-    items: [
-      { key: '/purchases', label: '采购入库', icon: 'cart', perm: 'purchase:view' },
-      { key: '/sales', label: '销售出库', icon: 'sell', perm: 'sales:view' },
-    ],
-  },
-  {
-    group: '库存管理',
-    items: [
-      { key: '/stocks', label: '库存查询', icon: 'database', perm: 'stock:view' },
-      { key: '/ledger', label: '库存流水', icon: 'ledger', perm: 'stock:ledger' },
-      { key: '/alerts', label: '库存预警', icon: 'alert', perm: 'stock:view' },
-      { key: '/stock-takes', label: '库存盘点', icon: 'clipboard', perm: 'stock:take' },
-      { key: '/transfers', label: '库存调拨', icon: 'transfer', perm: 'stock:transfer' },
-    ],
-  },
-  {
-    group: '资金往来',
-    items: [{ key: '/payments', label: '收付款单', icon: 'money', perm: 'payment:view' }],
-  },
-  {
-    group: '统计分析',
-    items: [{ key: '/reports', label: '统计报表', icon: 'chart', perm: 'report:view' }],
-  },
-  {
-    group: '系统管理',
-    items: [
-      { key: '/users', label: '用户管理', icon: 'users', perm: 'user:view' },
-      { key: '/roles', label: '角色权限', icon: 'shield', perm: 'role:view' },
-      { key: '/logs', label: '操作日志', icon: 'log', perm: 'log:view' },
-      { key: '/settings', label: '系统参数', icon: 'gear', perm: 'setting:view' },
-      { key: '/system', label: '数据维护', icon: 'database', perm: 'backup:run' },
-    ],
-  },
-];
-
 const ROUTES = {
   '/': DashboardPage,
   '/products': ProductsPage,
@@ -102,19 +53,22 @@ const ROUTES = {
   '/profile': ProfilePage,
 };
 
-// 找出第一个有权限的页面，作为登录后的落地页。
-function firstAllowed() {
-  for (const g of NAV) {
-    for (const it of g.items) {
-      if (!it.perm || can(it.perm)) return it.key;
-    }
-  }
-  return '/profile';
-}
-
 export default function App() {
   const state = useStore(session);
   const route = useRoute();
+
+  // 任意接口返回 401 时清空本地会话并回到登录页，避免用户停留在
+  // 一个所有操作都会报错的旧页面。
+  useEffect(() => {
+    const onUnauthorized = () => {
+      if (!session.get().user) return;
+      clearSession();
+      navigate('/', true);
+      toast('登录状态已失效，请重新登录', 'error', 4200);
+    };
+    window.addEventListener('mufish:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('mufish:unauthorized', onUnauthorized);
+  }, []);
 
   if (!state.ready) {
     return (
@@ -135,6 +89,8 @@ export default function App() {
 
   const path = route.path;
   const Page = ROUTES[path];
+  const title = findTitle(path);
+  const requiredPerm = routePerm(path);
 
   if (!Page) {
     return (
@@ -157,7 +113,10 @@ export default function App() {
     );
   }
 
-  const title = findTitle(path);
+  if (requiredPerm && !can(requiredPerm)) {
+    return <NoAccess route={route} title={title} />;
+  }
+
   return (
     <>
       <Shell route={route} title={title}>
@@ -169,14 +128,25 @@ export default function App() {
   );
 }
 
-function findTitle(path) {
-  for (const g of NAV) {
-    for (const it of g.items) {
-      if (it.key === path) return it.label;
-    }
-  }
-  if (path === '/profile') return '个人中心';
-  return '木鱼进销存';
+// 无权限直达时自动回到第一个有权限的页面，避免渲染业务数据。
+function NoAccess({ route, title }) {
+  useEffect(() => {
+    toast('没有访问该页面的权限', 'error', 3600);
+    navigate(firstAllowed(), true);
+  }, []);
+  return (
+    <Shell route={route} title={title}>
+      <div class="page">
+        <div class="card">
+          <div class="card-body">
+            <p class="muted">没有访问该页面的权限，正在返回可用页面…</p>
+          </div>
+        </div>
+      </div>
+      <ToastHost store={toasts} />
+      <ConfirmHost />
+    </Shell>
+  );
 }
 
 function Shell({ route, title, children }) {

@@ -37,7 +37,11 @@ export default function AlertsPage({ route }) {
         title="库存预警"
         icon="alert"
         bodyClass="no-pad"
-        extra={<span class="muted small">共 {rows.length} 个预警商品</span>}
+        extra={
+          <span class="muted small">
+            共 {rows.length} 个预警商品{rows.length >= 200 ? '（最多显示 200 条）' : ''}
+          </span>
+        }
       >
         <Toolbar
           right={

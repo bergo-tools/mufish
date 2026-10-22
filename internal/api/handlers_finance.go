@@ -257,7 +257,7 @@ func (h *Handler) exportArAp(w http.ResponseWriter, r *http.Request) error {
 	if typ == "payable" {
 		title = "应付对账表"
 	}
-	rows := [][]string{{"单位名称", "联系人", "电话", "期初金额", "本期发生", "已结算", "期末余额"}}
+	rows := [][]string{{"单位名称", "联系人", "电话", "期初金额", "累计发生", "已结算", "期末余额"}}
 	for _, x := range list {
 		rows = append(rows, []string{
 			x.PartnerName, x.Contact, x.Phone,
@@ -299,7 +299,7 @@ func (h *Handler) reportSalesDetail(w http.ResponseWriter, r *http.Request) erro
 }
 
 func (h *Handler) reportCashFlow(w http.ResponseWriter, r *http.Request) error {
-	list, err := h.st.CashFlow(r.Context(), qs(r, "from"), qs(r, "to"),
+	list, err := h.st.CashFlow(r.Context(), qs(r, "from"), qs(r, "to"), qs(r, "keyword"),
 		qi64(r, "account_id", 0), qi(r, "limit", 500))
 	if err != nil {
 		return err

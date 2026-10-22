@@ -539,20 +539,33 @@ export function usePagedList(fetcher, initialFilters = {}, initialSize = 20) {
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
   const filterKey = JSON.stringify(filters);
+  // 请求序号：快速切换筛选/翻页时，只接受最后一次请求的结果，
+  // 避免较早发出的请求后返回并覆盖新数据。
+  const reqSeq = useRef(0);
 
   const reload = useCallback(async () => {
+    const seq = ++reqSeq.current;
     setLoading(true);
     setError(null);
     try {
       const res = await fetcherRef.current({ page, size, ...JSON.parse(filterKey) });
+      if (seq !== reqSeq.current) return;
+      const nextTotal = (res && res.total) || 0;
+      setTotal(nextTotal);
+      // 删除当前页最后一条、筛选后总数变少时，页码可能越界。
+      const maxPage = Math.max(1, Math.ceil(nextTotal / size));
+      if (page > maxPage) {
+        setPage(maxPage);
+        return;
+      }
       setList((res && res.list) || []);
-      setTotal((res && res.total) || 0);
     } catch (e) {
+      if (seq !== reqSeq.current) return;
       setError(e);
       setList([]);
       setTotal(0);
     } finally {
-      setLoading(false);
+      if (seq === reqSeq.current) setLoading(false);
     }
   }, [page, size, filterKey]);
 

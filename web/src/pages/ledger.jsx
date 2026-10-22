@@ -88,9 +88,9 @@ export default function LedgerPage({ route }) {
   const doSearch = () => setFilters({ keyword });
 
   // 导出当前筛选条件下的流水 CSV。
-  const handleExport = () => {
+  const handleExport = async () => {
     try {
-      Api.exportLedger({ ...filters });
+      await Api.exportLedger({ ...filters });
       notifyOK('导出成功');
     } catch (e) {
       notifyError(e);

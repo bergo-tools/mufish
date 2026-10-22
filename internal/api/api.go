@@ -93,7 +93,7 @@ func (h *Handler) Router() http.Handler {
 
 		// --- 商品 ---
 		{"GET", "/api/v1/products", "product:view", h.listProducts},
-		{"GET", "/api/v1/products/options", "", h.productOptions},
+		{"GET", "/api/v1/products/options", "product:view|purchase:view|purchase:create|sales:view|sales:create|stock:take|stock:transfer", h.productOptions},
 		{"GET", "/api/v1/products/export", "product:view", h.exportProducts},
 		{"POST", "/api/v1/products/import", "product:import", h.importProducts},
 		{"GET", "/api/v1/products/{id}", "product:view", h.getProduct},
@@ -104,7 +104,7 @@ func (h *Handler) Router() http.Handler {
 
 		// --- 往来单位 ---
 		{"GET", "/api/v1/partners", "partner:view", h.listPartners},
-		{"GET", "/api/v1/partners/options", "", h.partnerOptions},
+		{"GET", "/api/v1/partners/options", "partner:view|purchase:view|purchase:create|sales:view|sales:create|payment:view|payment:create|report:view", h.partnerOptions},
 		{"GET", "/api/v1/partners/{id}", "partner:view", h.getPartner},
 		{"POST", "/api/v1/partners", "partner:create", h.savePartner},
 		{"PUT", "/api/v1/partners/{id}", "partner:update", h.savePartner},
@@ -112,14 +112,14 @@ func (h *Handler) Router() http.Handler {
 
 		// --- 仓库 ---
 		{"GET", "/api/v1/warehouses", "warehouse:view", h.listWarehouses},
-		{"GET", "/api/v1/warehouses/options", "", h.warehouseOptions},
+		{"GET", "/api/v1/warehouses/options", "warehouse:view|stock:view|stock:ledger|purchase:view|purchase:create|sales:view|sales:create|stock:take|stock:transfer|report:view", h.warehouseOptions},
 		{"POST", "/api/v1/warehouses", "warehouse:manage", h.saveWarehouse},
 		{"PUT", "/api/v1/warehouses/{id}", "warehouse:manage", h.saveWarehouse},
 		{"DELETE", "/api/v1/warehouses/{id}", "warehouse:manage", h.deleteWarehouse},
 
 		// --- 资金账户 ---
 		{"GET", "/api/v1/accounts", "account:view", h.listAccounts},
-		{"GET", "/api/v1/accounts/options", "", h.accountOptions},
+		{"GET", "/api/v1/accounts/options", "account:view|payment:view|payment:create|report:view", h.accountOptions},
 		{"POST", "/api/v1/accounts", "account:manage", h.saveAccount},
 		{"PUT", "/api/v1/accounts/{id}", "account:manage", h.saveAccount},
 		{"DELETE", "/api/v1/accounts/{id}", "account:manage", h.deleteAccount},
@@ -175,7 +175,7 @@ func (h *Handler) Router() http.Handler {
 		{"POST", "/api/v1/payments/{id}/confirm", "payment:confirm", h.confirmPayment},
 		{"POST", "/api/v1/payments/{id}/void", "payment:void", h.voidPayment},
 		{"DELETE", "/api/v1/payments/{id}", "payment:create", h.deletePayment},
-		{"GET", "/api/v1/payments/unpaid-orders", "", h.unpaidOrders},
+		{"GET", "/api/v1/payments/unpaid-orders", "payment:view|payment:create", h.unpaidOrders},
 
 		// --- 报表 ---
 		{"GET", "/api/v1/reports/inout", "report:view", h.reportInout},
@@ -210,7 +210,7 @@ func (h *Handler) Router() http.Handler {
 		{"GET", "/api/v1/settings", "setting:view", h.getSettings},
 		{"PUT", "/api/v1/settings", "setting:manage", h.saveSettings},
 
-		{"GET", "/api/v1/system/info", "", h.systemInfo},
+		{"GET", "/api/v1/system/info", "backup:run", h.systemInfo},
 		{"POST", "/api/v1/system/backup", "backup:run", h.backup},
 		{"GET", "/api/v1/system/backups", "backup:run", h.listBackups},
 		{"POST", "/api/v1/system/restore", "backup:run", h.restore},
@@ -247,8 +247,8 @@ func (h *Handler) wrap(rt route) http.Handler {
 				return
 			}
 			user, perms = u, p
-			if rt.perm != "" && !perms.Has(rt.perm) {
-				writeErr(w, http.StatusForbidden, fmt.Errorf("没有操作权限：%s", rt.perm))
+			if rt.perm != "" && !hasRoutePerm(perms, rt.perm) {
+				writeErr(w, http.StatusForbidden, fmt.Errorf("没有操作权限：%s", strings.ReplaceAll(rt.perm, "|", " / ")))
 				return
 			}
 		} else {
@@ -263,6 +263,20 @@ func (h *Handler) wrap(rt route) http.Handler {
 			writeErr(w, statusOf(err), err)
 		}
 	})
+}
+
+// hasRoutePerm 支持用 "|" 声明「满足任意一个权限即可」，
+// 用于采购/销售/报表等模块共用的下拉选项接口。
+func hasRoutePerm(perms model.PermSet, spec string) bool {
+	if spec == "" {
+		return true
+	}
+	for _, code := range strings.Split(spec, "|") {
+		if perms.Has(code) {
+			return true
+		}
+	}
+	return false
 }
 
 func isPublic(pattern string) bool {
@@ -311,6 +325,12 @@ func (h *Handler) currentUser(r *http.Request) (model.User, model.PermSet, error
 		return model.User{}, nil, err
 	}
 	return u, perms, nil
+}
+
+// hasAnyPerm 判断当前请求用户是否拥有任意一个权限。
+func hasAnyPerm(r *http.Request, codes ...string) bool {
+	perms, _ := r.Context().Value(ctxPerms).(model.PermSet)
+	return perms.HasAny(codes...)
 }
 
 // user 取出当前用户。

@@ -26,6 +26,7 @@ function emptyForm() {
     allow_negative_stock: false,
     purchase_price_follow: false,
     sales_price_follow: false,
+    purchase_cost_include: true,
     doc_print_note: '',
     session_hours: '72',
   };
@@ -43,7 +44,9 @@ export default function SettingsPage({ route }) {
       return (await Api.settings()) || {};
     } catch (e) {
       notifyError(e);
-      return {};
+      // 必须把错误抛给 useAsync：加载失败时不能拿默认值继续渲染并允许保存，
+      // 否则用户一次保存就会把真实系统参数覆盖成默认值。
+      throw e;
     }
   }, []);
 
@@ -62,6 +65,7 @@ export default function SettingsPage({ route }) {
       allow_negative_stock: toBool(data.allow_negative_stock),
       purchase_price_follow: toBool(data.purchase_price_follow),
       sales_price_follow: toBool(data.sales_price_follow),
+      purchase_cost_include: data.purchase_cost_include === undefined ? true : toBool(data.purchase_cost_include),
       doc_print_note: data.doc_print_note || '',
       session_hours: data.session_hours || '72',
     });
@@ -70,10 +74,10 @@ export default function SettingsPage({ route }) {
   const setField = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
 
   // 无修改权限时用只读标签代替开关（Switch 组件不支持 disabled）。
-  function boolControl(label, key) {
+  function boolControl(label, key, hint) {
     if (!canManage) {
       return (
-        <Field label={label}>
+        <Field label={label} hint={hint}>
           <span>
             <Tag color={form[key] ? 'green' : 'gray'}>{form[key] ? '已开启' : '已关闭'}</Tag>
           </span>
@@ -81,7 +85,7 @@ export default function SettingsPage({ route }) {
       );
     }
     return (
-      <Field label={label}>
+      <Field label={label} hint={hint}>
         <Switch checked={!!form[key]} onInput={(v) => setField(key, v)} label={form[key] ? '开启' : '关闭'} />
       </Field>
     );
@@ -89,8 +93,8 @@ export default function SettingsPage({ route }) {
 
   async function save() {
     const hours = String(form.session_hours || '').trim();
-    if (!hours || Number(hours) <= 0) {
-      notifyError(new Error('登录保持小时数必须是大于 0 的整数'));
+    if (!/^\d+$/.test(hours) || Number(hours) <= 0 || Number(hours) > 8760) {
+      notifyError(new Error('登录保持小时数必须是 1～8760 之间的整数'));
       return;
     }
     const payload = {
@@ -102,6 +106,7 @@ export default function SettingsPage({ route }) {
       allow_negative_stock: toFlag(form.allow_negative_stock),
       purchase_price_follow: toFlag(form.purchase_price_follow),
       sales_price_follow: toFlag(form.sales_price_follow),
+      purchase_cost_include: toFlag(form.purchase_cost_include),
       doc_print_note: form.doc_print_note || '',
       session_hours: hours,
     };
@@ -129,14 +134,24 @@ export default function SettingsPage({ route }) {
 
   if (loading) return <Spinner text="正在加载系统参数…" />;
 
+  if (error) {
+    return (
+      <div class="page">
+        <Card title="系统参数加载失败">
+          <p class="muted">{error.message}</p>
+          <p class="muted small">为避免用默认值覆盖真实配置，加载成功前不允许保存。</p>
+          <div class="mt-12">
+            <Button icon="refresh" onClick={() => reload()}>
+              重新加载
+            </Button>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div class="page">
-      {error ? (
-        <Card title="加载失败">
-          <p class="muted">{error.message}</p>
-        </Card>
-      ) : null}
-
       <Card
         title="系统参数"
         icon="gear"
@@ -152,6 +167,7 @@ export default function SettingsPage({ route }) {
           </p>
           <div>
             <h4 class="card-title">企业信息</h4>
+            <p class="muted small mt-8">企业名称用于登录页标题；地址、电话、税号暂未用于单据打印。</p>
             <div class="form-grid form-grid-3 mt-8">
               <Field label="企业全称">
                 <Input
@@ -204,6 +220,11 @@ export default function SettingsPage({ route }) {
               {boolControl('允许负库存出库', 'allow_negative_stock')}
               {boolControl('采购入库更新参考进价', 'purchase_price_follow')}
               {boolControl('销售出库更新参考售价', 'sales_price_follow')}
+              {boolControl(
+                '采购优惠/费用计入库存成本',
+                'purchase_cost_include',
+                '开启后，运费等费用计入成本、商业折扣冲减成本；关闭后只影响结算金额。',
+              )}
             </div>
           </div>
 
@@ -212,7 +233,7 @@ export default function SettingsPage({ route }) {
           <div>
             <h4 class="card-title">单据设置</h4>
             <div class="form-grid mt-8">
-              <Field label="单据打印落款" hint="打印单据时显示在页面底部的说明文字">
+              <Field label="单据打印落款" hint="预留设置，当前版本尚未提供单据打印入口">
                 {canManage ? (
                   <Textarea
                     value={form.doc_print_note}

@@ -89,6 +89,10 @@ export default function StockTakesPage({ route }) {
   const [form, setForm] = useState({ id: 0, warehouse_id: '', take_date: today(), remark: '' });
   const [rows, setRows] = useState([]);
   const [bookLoading, setBookLoading] = useState(false);
+  // 盘盈/零库存商品需要单独添加，不能只依赖 stocks 表。
+  const [productKw, setProductKw] = useState('');
+  const [productResults, setProductResults] = useState([]);
+  const [pickedProductId, setPickedProductId] = useState('');
 
   // 详情弹窗。
   const [viewOpen, setViewOpen] = useState(false);
@@ -102,8 +106,15 @@ export default function StockTakesPage({ route }) {
     }
     setBookLoading(true);
     try {
-      const res = await Api.stocks({ warehouse_id: warehouseId, page: 1, size: 500, only_stock: 1 });
-      const stockList = (res && res.list) || [];
+      // 后端单页最多 500 条，必须分页拉全，否则盘点会静默漏掉商品。
+      const stockList = [];
+      for (let page = 1; ; page++) {
+        const res = await Api.stocks({ warehouse_id: warehouseId, page, size: 500, only_stock: 1 });
+        const batch = (res && res.list) || [];
+        stockList.push(...batch);
+        const total = Number((res && res.total) || 0);
+        if (batch.length < 500 || (total > 0 && stockList.length >= total) || page >= 100) break;
+      }
       setRows(
         stockList.map((s) => {
           const kept = (keepEdits && keepEdits[s.product_id]) || null;
@@ -192,6 +203,41 @@ export default function StockTakesPage({ route }) {
 
   const updateRow = (index, patch) => {
     setRows((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+  };
+
+  const searchProducts = async () => {
+    try {
+      setProductResults((await Api.productOptions(productKw || '')) || []);
+    } catch (e) {
+      notifyError(e);
+    }
+  };
+
+  const addProduct = () => {
+    const p = productResults.find((x) => String(x.id) === String(pickedProductId));
+    if (!p) {
+      notifyError(new Error('请先搜索并选择商品'));
+      return;
+    }
+    if (rows.some((r) => String(r.product_id) === String(p.id))) {
+      notifyError(new Error('该商品已在盘点明细中'));
+      return;
+    }
+    setRows((prev) => [
+      ...prev,
+      {
+        product_id: p.id,
+        product_code: p.code || '',
+        product_name: p.name || '',
+        spec: p.spec || '',
+        unit: p.unit || '',
+        book_qty: 0,
+        real_qty: 0,
+        price: Number(p.purchase_price || 0),
+        remark: '',
+      },
+    ]);
+    setPickedProductId('');
   };
 
   // 明细合计。
@@ -464,6 +510,34 @@ export default function StockTakesPage({ route }) {
             刷新账面库存
           </Button>
         </div>
+
+        <div class="row mt-8" style="flex-wrap:wrap">
+          <SearchBox
+            value={productKw}
+            onInput={setProductKw}
+            onSearch={searchProducts}
+            placeholder="搜索商品后添加到盘点"
+            width={240}
+          />
+          <Button size="sm" icon="search" onClick={searchProducts}>
+            搜索商品
+          </Button>
+          <div style="min-width:220px; flex:1">
+            <Select
+              value={pickedProductId}
+              onInput={setPickedProductId}
+              options={productResults.map((p) => ({
+                value: String(p.id),
+                label: `${p.code ? p.code + ' ' : ''}${p.name || ''}`,
+              }))}
+              placeholder="选择要添加的商品"
+            />
+          </div>
+          <Button size="sm" icon="plus" onClick={addProduct} disabled={!pickedProductId}>
+            添加商品
+          </Button>
+        </div>
+        <p class="muted small mt-8">用于盘盈或零库存商品：添加后账面数量按 0 计算，请填写实盘数量。</p>
 
         <div class="doc-items-table mt-8">
           <Table

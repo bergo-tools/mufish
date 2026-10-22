@@ -33,6 +33,9 @@ async function request(method, path, { body, params, raw } = {}) {
   }
 
   if (resp.status === 401) {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('mufish:unauthorized'));
+    }
     const err = new Error('登录状态已失效，请重新登录');
     err.unauthorized = true;
     throw err;
@@ -57,12 +60,29 @@ async function request(method, path, { body, params, raw } = {}) {
   return payload.data;
 }
 
+
+// 从 Content-Disposition 中解析服务端文件名，优先使用 filename*。
+export function filenameFromDisposition(disposition, fallback = '导出.csv') {
+  if (!disposition) return fallback;
+  const star = disposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim().replace(/^"|"$/g, ''));
+    } catch (e) {
+      /* 编码异常时使用普通 filename 或 fallback */
+    }
+  }
+  const plain = disposition.match(/filename\s*=\s*"?([^";]+)"?/i);
+  if (plain) return plain[1].trim();
+  return fallback;
+}
+
 export const api = {
   get: (path, params) => request('GET', path, { params }),
   post: (path, body) => request('POST', path, { body: body === undefined ? {} : body }),
   put: (path, body) => request('PUT', path, { body }),
   del: (path) => request('DELETE', path),
-  download(path, params) {
+  async download(path, params) {
     let url = BASE + path;
     if (params) {
       const search = new URLSearchParams();
@@ -73,12 +93,47 @@ export const api = {
       const qs = search.toString();
       if (qs) url += '?' + qs;
     }
+
+    let resp;
+    try {
+      resp = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'X-Requested-With': 'fetch' },
+      });
+    } catch (e) {
+      throw new Error('网络连接失败，请确认服务仍在运行');
+    }
+    if (resp.status === 401) {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('mufish:unauthorized'));
+      }
+      throw new Error('登录状态已失效，请重新登录');
+    }
+    if (!resp.ok) {
+      let message = '导出失败（' + resp.status + '）';
+      try {
+        const payload = await resp.json();
+        if (payload && payload.msg) message = payload.msg;
+      } catch (e) {
+        /* 非 JSON 错误响应，保留状态码提示 */
+      }
+      throw new Error(message);
+    }
+
+    const blob = await resp.blob();
+    const filename = filenameFromDisposition(
+      resp.headers.get('Content-Disposition') || '',
+      '导出.csv',
+    );
+    const objectUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
+    a.href = objectUrl;
+    a.download = filename;
     a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
     a.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
   },
 };
 

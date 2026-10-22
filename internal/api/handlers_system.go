@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +47,13 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r)
 	if err != nil {
 		return err
+	}
+	target, err := h.st.GetUser(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	if target.IsSuper && !user(r).IsSuper {
+		return store.NewError(http.StatusForbidden, "只有超级管理员可以修改超级管理员账号")
 	}
 	var in store.UserInput
 	if err := decodeJSON(r, &in); err != nil {
@@ -90,6 +98,9 @@ func (h *Handler) resetPassword(w http.ResponseWriter, r *http.Request) error {
 	target, err := h.st.GetUser(r.Context(), id)
 	if err != nil {
 		return err
+	}
+	if target.IsSuper && !user(r).IsSuper {
+		return store.NewError(http.StatusForbidden, "只有超级管理员可以重置超级管理员口令")
 	}
 	if err := h.st.ResetPassword(r.Context(), id, in.Password); err != nil {
 		return err
@@ -212,6 +223,12 @@ func (h *Handler) saveSettings(w http.ResponseWriter, r *http.Request) error {
 	var in map[string]string
 	if err := decodeJSON(r, &in); err != nil {
 		return err
+	}
+	if v, ok := in["session_hours"]; ok {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil || n <= 0 || n > 24*365 {
+			return store.NewError(http.StatusBadRequest, "登录保持小时数必须是 1～8760 之间的整数")
+		}
 	}
 	if err := h.st.SaveSettings(r.Context(), in); err != nil {
 		return err
