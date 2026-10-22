@@ -163,6 +163,15 @@ func TestAmountOf(t *testing.T) {
 	if got := AmountOf(QtyFrom(0), PriceFrom(10)); got != 0 {
 		t.Fatalf("数量为 0 时金额应为 0，实际 %s", got)
 	}
+	// 0.7 × 0.05 元 = 0.035 元，按分四舍五入应为 4 分；浮点计算会得到
+	// 3.4999999999999996，从而错误地舍入为 3 分。
+	if got := AmountOf(QtyFrom(0.7), PriceFrom(0.05)); got != Money(4) {
+		t.Fatalf("0.7 × 0.05 应四舍五入为 4 分，实际 %d", got)
+	}
+	// 负数保持“远离零”的舍入规则。
+	if got := AmountOf(QtyFrom(-0.7), PriceFrom(0.05)); got != Money(-4) {
+		t.Fatalf("-0.7 × 0.05 应四舍五入为 -4 分，实际 %d", got)
+	}
 }
 
 func TestNormDate(t *testing.T) {

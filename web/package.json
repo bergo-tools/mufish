@@ -1,6 +1,6 @@
 {
   "name": "mufish-web",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "description": "木鱼进销存前端（Preact）",
   "type": "module",

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -87,8 +88,30 @@ func (p *Price) Scan(src any) error {
 func (p Price) Value() (driver.Value, error) { return int64(p), nil }
 
 // AmountOf 按「数量 × 单价」计算金额（四舍五入到分）。
+//
+// 数量按 4 位小数、单价按万分之一元换算成整数后再计算，避免
+// 0.7 × 0.05 这类刚好半分的组合被浮点误差舍入到错误方向。
+// 金额（分）= round(q4 × p4 / 1,000,000)，负数按远离零舍入。
 func AmountOf(qty Qty, price Price) Money {
-	return Money(math.Round(float64(qty) * price.Float() * 100))
+	q4 := int64(math.Round(float64(qty) * 10000))
+	p4 := int64(price)
+	if q4 == 0 || p4 == 0 {
+		return 0
+	}
+
+	// 使用大整数避免 q4 × p4 在极端输入下溢出；日常金额不会走到
+	// 这个规模，但金额计算不应默默回绕。
+	var product, factor big.Int
+	product.SetInt64(q4)
+	factor.SetInt64(p4)
+	product.Mul(&product, &factor)
+	if product.Sign() >= 0 {
+		product.Add(&product, big.NewInt(500000))
+	} else {
+		product.Sub(&product, big.NewInt(500000))
+	}
+	product.Quo(&product, big.NewInt(1000000))
+	return Money(product.Int64())
 }
 
 // Qty 数量，最多 4 位小数。
