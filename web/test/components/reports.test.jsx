@@ -107,4 +107,16 @@ describe('报表筛选口径', () => {
     expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument();
     expect(screen.queryByText('暂无数据')).not.toBeInTheDocument();
   });
+
+  it('筛选下拉加载失败时显示错误与重试，而不是静默显示空下拉', async () => {
+    Api.categoriesFlat.mockRejectedValue(new Error('分类加载失败'));
+    render(<ReportsPage />);
+    await waitFor(() =>
+      expect(screen.getByText(/筛选下拉加载失败：分类加载失败/)).toBeInTheDocument(),
+    );
+
+    Api.categoriesFlat.mockResolvedValue([]);
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await waitFor(() => expect(screen.queryByText(/筛选下拉加载失败/)).not.toBeInTheDocument());
+  });
 });

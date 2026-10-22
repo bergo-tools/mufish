@@ -92,6 +92,11 @@ describe('表单控件', () => {
     expect(onSwitch).toHaveBeenCalledWith(true);
     expect(screen.getByText('开关')).toBeInTheDocument();
   });
+
+  it('Switch 禁用后标记为不可用', () => {
+    render(<Switch checked={false} disabled onInput={() => {}} label="只读开关" />);
+    expect(screen.getByRole('checkbox')).toBeDisabled();
+  });
 });
 
 describe('Tabs 与分页', () => {
@@ -143,6 +148,22 @@ describe('Table', () => {
     expect(screen.getByText('暂无商品')).toBeInTheDocument();
     rerender(<Table columns={[{ title: '名称', key: 'name' }]} data={[]} loading />);
     expect(screen.getByText('加载中…')).toBeInTheDocument();
+  });
+
+  it('支持函数形式的 rowKey，避免混合单据使用数组下标作为键', () => {
+    const rowKey = vi.fn((r) => r.code);
+    render(
+      <Table
+        rowKey={rowKey}
+        columns={[{ title: '编码', key: 'code' }]}
+        data={[
+          { code: 'P-1' },
+          { code: 'P-2' },
+        ]}
+      />,
+    );
+    expect(rowKey).toHaveBeenCalledWith(expect.objectContaining({ code: 'P-1' }), 0);
+    expect(rowKey).toHaveBeenCalledWith(expect.objectContaining({ code: 'P-2' }), 1);
   });
 });
 

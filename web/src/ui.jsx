@@ -198,10 +198,15 @@ export function Checkbox({ checked, onInput, label, disabled }) {
   );
 }
 
-export function Switch({ checked, onInput, label }) {
+export function Switch({ checked, onInput, label, disabled }) {
   return (
     <label class="switch">
-      <input type="checkbox" checked={!!checked} onChange={(e) => onInput && onInput(e.target.checked)} />
+      <input
+        type="checkbox"
+        checked={!!checked}
+        disabled={disabled}
+        onChange={(e) => onInput && onInput(e.target.checked)}
+      />
       <span class="switch-track">
         <span class="switch-thumb" />
       </span>
@@ -314,7 +319,13 @@ export function Table({
           ) : (
             data.map((row, ri) => (
               <tr
-                key={row[rowKey] !== undefined ? row[rowKey] : ri}
+                key={
+                  typeof rowKey === 'function'
+                    ? rowKey(row, ri)
+                    : row[rowKey] !== undefined
+                      ? row[rowKey]
+                      : ri
+                }
                 class={onRowClick ? 'row-clickable' : ''}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
               >

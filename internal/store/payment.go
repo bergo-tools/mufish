@@ -120,7 +120,11 @@ func (s *Store) SavePayment(ctx context.Context, id int64, in PaymentInput, user
 	now := model.Now()
 
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
-		partnerName, err := loadPartnerName(ctx, tx, in.PartnerID)
+		partnerRole := "customer"
+		if in.Type == model.PayTypePayment {
+			partnerRole = "supplier"
+		}
+		partnerName, err := loadPartnerForRole(ctx, tx, in.PartnerID, partnerRole)
 		if err != nil {
 			return err
 		}
@@ -236,6 +240,16 @@ func (s *Store) ConfirmPayment(ctx context.Context, id int64, user OpUser) error
 		}
 		if p.Status == model.DocVoided {
 			return fmt.Errorf("%w: 该单据已作废", ErrBadRequest)
+		}
+
+		// 旧草稿可能是在单位类型修改前保存的，确认时必须再次校验方向，
+		// 否则收款单可能记到供应商名下，造成应收应付方向错误。
+		partnerRole := "customer"
+		if p.Type == model.PayTypePayment {
+			partnerRole = "supplier"
+		}
+		if _, err := loadPartnerForRole(ctx, tx, p.PartnerID, partnerRole); err != nil {
+			return err
 		}
 
 		// 关联单据校验：类型、状态和往来单位必须匹配，避免旧数据绕过保存时的校验。

@@ -84,7 +84,12 @@ export default function ReportsPage() {
   const [partnerKw, setPartnerKw] = useState('');
 
   // 下拉数据：仓库 / 分类 / 客户 / 供应商 / 资金账户。
-  const options = useAsync(async () => {
+  const {
+    data: optionsData,
+    error: optionsError,
+    reload: reloadOptions,
+    setData: setOptionsData,
+  } = useAsync(async () => {
     const [warehouses, categories, customers, suppliers, accounts] = await Promise.all([
       Api.warehouseOptions(),
       Api.categoriesFlat(),
@@ -101,14 +106,14 @@ export default function ReportsPage() {
     };
   }, []);
 
-  const opt = options.data || {};
+  const opt = optionsData || {};
 
   // 往来单位下拉默认最多 300 条；报表筛选需要能搜索到更后面的单位。
   const searchReportPartners = async () => {
     const kind = tab === 'salesDetail' ? 'customer' : 'supplier';
     try {
       const partners = await Api.partnerOptions(kind, partnerKw);
-      options.setData((prev) => {
+      setOptionsData((prev) => {
         const key = kind === 'customer' ? 'customers' : 'suppliers';
         const merged = new Map();
         (((prev || {})[key]) || []).forEach((p) => merged.set(p.id, p));
@@ -367,6 +372,15 @@ export default function ReportsPage() {
             setPartnerKw('');
           }}
         />
+
+        {optionsError ? (
+          <div class="row-between" style="padding:10px 14px; gap:10px; flex-wrap:wrap">
+            <span class="muted small">筛选下拉加载失败：{optionsError.message}</span>
+            <Button size="sm" icon="refresh" onClick={() => reloadOptions()}>
+              重试
+            </Button>
+          </div>
+        ) : null}
 
         <Toolbar>
           {showDate ? (

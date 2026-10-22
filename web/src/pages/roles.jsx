@@ -294,6 +294,7 @@ export default function RolesPage({ route }) {
                 <div class="row-between mt-12" style="flex-wrap:wrap">
                   <Switch
                     checked={!!form.super}
+                    disabled={readOnly}
                     onInput={readOnly ? undefined : (v) => setField('super', v)}
                     label="超级管理员（拥有全部权限）"
                   />

@@ -86,7 +86,7 @@ func (h *Handler) Router() http.Handler {
 
 		// --- 商品分类 ---
 		{"GET", "/api/v1/categories", "category:view", h.listCategories},
-		{"GET", "/api/v1/categories/flat", "category:view", h.allCategories},
+		{"GET", "/api/v1/categories/flat", "category:view|product:view|stock:view|report:view", h.allCategories},
 		{"POST", "/api/v1/categories", "category:manage", h.saveCategory},
 		{"PUT", "/api/v1/categories/{id}", "category:manage", h.saveCategory},
 		{"DELETE", "/api/v1/categories/{id}", "category:manage", h.deleteCategory},

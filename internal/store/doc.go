@@ -965,18 +965,6 @@ func docFilter(keyword, from, to string, status int, partnerCol string) ([]strin
 	return where, args
 }
 
-func loadPartnerName(ctx context.Context, tx *sql.Tx, id int64) (string, error) {
-	if id == 0 {
-		return "", fmt.Errorf("%w: 请选择往来单位", ErrBadRequest)
-	}
-	var name string
-	err := tx.QueryRowContext(ctx, `SELECT name FROM partners WHERE id=?`, id).Scan(&name)
-	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("%w: 往来单位不存在", ErrBadRequest)
-	}
-	return name, err
-}
-
 // loadPartnerForRole 读取往来单位，并校验其类型是否满足业务角色。
 // role 为 supplier 时允许 supplier / both，为 customer 时允许 customer / both。
 func loadPartnerForRole(ctx context.Context, tx *sql.Tx, id int64, role string) (string, error) {
@@ -994,11 +982,11 @@ func loadPartnerForRole(ctx context.Context, tx *sql.Tx, id int64, role string) 
 	switch role {
 	case "supplier":
 		if typ != "supplier" && typ != "both" {
-			return "", fmt.Errorf("%w: 采购单必须选择供应商", ErrBadRequest)
+			return "", fmt.Errorf("%w: 所选往来单位不是供应商", ErrBadRequest)
 		}
 	case "customer":
 		if typ != "customer" && typ != "both" {
-			return "", fmt.Errorf("%w: 销售单必须选择客户", ErrBadRequest)
+			return "", fmt.Errorf("%w: 所选往来单位不是客户", ErrBadRequest)
 		}
 	}
 	return name, nil

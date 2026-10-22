@@ -292,6 +292,15 @@ func (s *Store) SaveProduct(ctx context.Context, id int64, in ProductInput) (int
 	if in.SafetyStock < 0 || in.SafetyStockMax < 0 {
 		return 0, fmt.Errorf("%w: 安全库存和库存上限不能为负数", ErrBadRequest)
 	}
+	if in.CategoryID > 0 {
+		var categoryExists int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM categories WHERE id=?`, in.CategoryID).Scan(&categoryExists); err != nil {
+			return 0, err
+		}
+		if categoryExists == 0 {
+			return 0, fmt.Errorf("%w: 商品分类不存在", ErrBadRequest)
+		}
+	}
 	now := model.Now()
 	if id > 0 {
 		if in.Code == "" {
@@ -599,6 +608,40 @@ func (s *Store) SavePartner(ctx context.Context, id int64, in PartnerInput) (int
 	}
 	now := model.Now()
 	if id > 0 {
+		// 往来单位类型决定应收/应付报表是否展示该单位。若已有销售/收款
+		// 却改成纯供应商（或反之），欠款会从报表中消失，必须阻止。
+		if in.Type == "supplier" {
+			var salesRefs, receiptRefs int
+			if err := s.db.QueryRowContext(ctx,
+				`SELECT
+				   (SELECT COUNT(*) FROM sales_orders WHERE customer_id=? AND status<>2),
+				   (SELECT COUNT(*) FROM payments WHERE partner_id=? AND type='receipt' AND status<>2)`,
+				id, id).Scan(&salesRefs, &receiptRefs); err != nil {
+				return 0, err
+			}
+			if salesRefs > 0 || receiptRefs > 0 {
+				return 0, fmt.Errorf("%w: 该单位已有销售或收款记录，不能改为纯供应商；如同时经营请选择「客户兼供应商」", ErrBadRequest)
+			}
+			if in.InitReceivable != 0 {
+				return 0, fmt.Errorf("%w: 该单位填写了期初应收，不能改为纯供应商", ErrBadRequest)
+			}
+		}
+		if in.Type == "customer" {
+			var purchaseRefs, paymentRefs int
+			if err := s.db.QueryRowContext(ctx,
+				`SELECT
+				   (SELECT COUNT(*) FROM purchase_orders WHERE supplier_id=? AND status<>2),
+				   (SELECT COUNT(*) FROM payments WHERE partner_id=? AND type='payment' AND status<>2)`,
+				id, id).Scan(&purchaseRefs, &paymentRefs); err != nil {
+				return 0, err
+			}
+			if purchaseRefs > 0 || paymentRefs > 0 {
+				return 0, fmt.Errorf("%w: 该单位已有采购或付款记录，不能改为纯客户；如同时经营请选择「客户兼供应商」", ErrBadRequest)
+			}
+			if in.InitPayable != 0 {
+				return 0, fmt.Errorf("%w: 该单位填写了期初应付，不能改为纯客户", ErrBadRequest)
+			}
+		}
 		if in.Code == "" {
 			code, err := existingCode(ctx, s.db, "partners", id)
 			if err != nil {
@@ -816,13 +859,14 @@ func (s *Store) DeleteWarehouse(ctx context.Context, id int64) error {
 	checks := []string{
 		`SELECT COUNT(*) FROM purchase_orders WHERE warehouse_id=?`,
 		`SELECT COUNT(*) FROM sales_orders WHERE warehouse_id=?`,
+		`SELECT COUNT(*) FROM stock_takes WHERE warehouse_id=?`,
 		`SELECT COUNT(*) FROM stock_moves WHERE warehouse_id=?`,
 		`SELECT COUNT(*) FROM transfers WHERE from_warehouse_id=? OR to_warehouse_id=?`,
 	}
 	for i, q := range checks {
 		var c int
 		var err error
-		if i == 3 {
+		if i == 4 {
 			err = s.db.QueryRowContext(ctx, q, id, id).Scan(&c)
 		} else {
 			err = s.db.QueryRowContext(ctx, q, id).Scan(&c)
