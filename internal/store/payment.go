@@ -132,12 +132,15 @@ func (s *Store) SavePayment(ctx context.Context, id int64, in PaymentInput, user
 		accName := ""
 		if !(in.Method == "offset" && in.AccountID == 0) {
 			acc, ok, err := queryRow[model.Account](ctx, tx,
-				`SELECT id, name FROM accounts WHERE id=?`, in.AccountID)
+				`SELECT id, name, status FROM accounts WHERE id=?`, in.AccountID)
 			if err != nil {
 				return err
 			}
 			if !ok || acc.ID == 0 {
 				return fmt.Errorf("%w: 请选择资金账户", ErrBadRequest)
+			}
+			if acc.Status != 1 {
+				return fmt.Errorf("%w: 所选资金账户已停用，请选择其他账户", ErrBadRequest)
 			}
 			accName = acc.Name
 		}
@@ -248,7 +251,7 @@ func (s *Store) ConfirmPayment(ctx context.Context, id int64, user OpUser) error
 		if p.Type == model.PayTypePayment {
 			partnerRole = "supplier"
 		}
-		if _, err := loadPartnerForRole(ctx, tx, p.PartnerID, partnerRole); err != nil {
+		if _, err := loadPartnerForRoleAllowDisabled(ctx, tx, p.PartnerID, partnerRole); err != nil {
 			return err
 		}
 

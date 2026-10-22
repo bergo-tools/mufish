@@ -967,17 +967,34 @@ func docFilter(keyword, from, to string, status int, partnerCol string) ([]strin
 
 // loadPartnerForRole 读取往来单位，并校验其类型是否满足业务角色。
 // role 为 supplier 时允许 supplier / both，为 customer 时允许 customer / both。
+// 新建 / 修改单据时必须使用启用状态的单位；历史草稿确认可改用
+// loadPartnerForRoleAllowDisabled，避免主数据停用后锁死已有单据。
 func loadPartnerForRole(ctx context.Context, tx *sql.Tx, id int64, role string) (string, error) {
+	return loadPartnerForRoleStatus(ctx, tx, id, role, true)
+}
+
+// loadPartnerForRoleAllowDisabled 与 loadPartnerForRole 相同，但允许已停用单位。
+// 仅用于确认停用前已经保存的草稿。
+func loadPartnerForRoleAllowDisabled(ctx context.Context, tx *sql.Tx, id int64, role string) (string, error) {
+	return loadPartnerForRoleStatus(ctx, tx, id, role, false)
+}
+
+func loadPartnerForRoleStatus(ctx context.Context, tx *sql.Tx, id int64, role string, requireActive bool) (string, error) {
 	if id == 0 {
 		return "", fmt.Errorf("%w: 请选择往来单位", ErrBadRequest)
 	}
 	var name, typ string
-	err := tx.QueryRowContext(ctx, `SELECT name, type FROM partners WHERE id=?`, id).Scan(&name, &typ)
+	var status int
+	err := tx.QueryRowContext(ctx, `SELECT name, type, status FROM partners WHERE id=?`, id).
+		Scan(&name, &typ, &status)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("%w: 往来单位不存在", ErrBadRequest)
 	}
 	if err != nil {
 		return "", err
+	}
+	if requireActive && status != 1 {
+		return "", fmt.Errorf("%w: 所选往来单位已停用，请选择其他单位", ErrBadRequest)
 	}
 	switch role {
 	case "supplier":
