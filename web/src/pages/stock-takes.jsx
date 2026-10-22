@@ -2,7 +2,7 @@
 import { useState } from 'preact/hooks';
 import { Api } from '../api.js';
 import { can, notifyError, notifyOK } from '../store.js';
-import { fmtDate, fmtDateTime, fmtQty, today } from '../format.js';
+import { amountCents, fmtDate, fmtDateTime, fmtQty, moneyFromCents, today } from '../format.js';
 import {
   Button,
   Card,
@@ -242,10 +242,11 @@ export default function StockTakesPage({ route }) {
 
   // 明细合计。
   const totalDiffQty = rows.reduce((a, r) => a + (Number(r.real_qty || 0) - Number(r.book_qty || 0)), 0);
-  const totalDiffAmount = rows.reduce(
-    (a, r) => a + (Number(r.real_qty || 0) - Number(r.book_qty || 0)) * Number(r.price || 0),
+  const totalDiffCents = rows.reduce(
+    (a, r) => a + amountCents(Number(r.real_qty || 0) - Number(r.book_qty || 0), r.price),
     0,
   );
+  const totalDiffAmount = moneyFromCents(totalDiffCents);
 
   const handleSave = async () => {
     if (!form.warehouse_id) {

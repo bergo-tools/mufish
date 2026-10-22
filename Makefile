@@ -8,7 +8,7 @@
 #   make clean      # 清理构建产物
 
 APP      := mufish
-VERSION  ?= 0.9.0
+VERSION  ?= 0.10.0
 LDFLAGS  := -s -w -X main.version=$(VERSION)
 GOFLAGS  :=
 GO       ?= go

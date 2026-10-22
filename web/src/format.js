@@ -6,6 +6,43 @@ export function fmtMoney(v, withSymbol = false) {
   return withSymbol ? '¥' + s : s;
 }
 
+// 金额（分）与“数量 × 单价”的精确计算。
+//
+// 后端 AmountOf 会先把数量换算成 4 位小数整数、单价换算成万分之一元
+// 整数，再按分四舍五入；前端合计必须使用同一规则，否则多条半分边界
+// 明细会出现“每行显示 0.04、合计却显示 0.07”的差异。
+export function moneyToCents(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n * 100) : 0;
+}
+
+export function moneyFromCents(cents) {
+  return Number(cents || 0) / 100;
+}
+
+export function amountCents(qty, price) {
+  const q = Number(qty);
+  const p = Number(price);
+  if (!Number.isFinite(q) || !Number.isFinite(p)) return 0;
+  const q4 = Math.round(q * 10000);
+  const p4 = Math.round(p * 10000);
+  if (q4 === 0 || p4 === 0) return 0;
+  const product = BigInt(q4) * BigInt(p4);
+  const denominator = 1000000n;
+  const half = 500000n;
+  const rounded = product >= 0n
+    ? (product + half) / denominator
+    : (product - half) / denominator;
+  return Number(rounded);
+}
+
+export function sumAmountCents(items, qtyKey = 'qty', priceKey = 'price') {
+  return (items || []).reduce(
+    (sum, item) => sum + amountCents(item && item[qtyKey], item && item[priceKey]),
+    0,
+  );
+}
+
 export function fmtQty(v, digits = 4) {
   const n = Number(v || 0);
   if (Number.isInteger(n)) return String(n);

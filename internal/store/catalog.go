@@ -479,13 +479,13 @@ func (s *Store) ListPartners(ctx context.Context, q PartnerQuery) (model.Page[mo
 	args2 := append(append([]any{}, args...), size, (page-1)*size)
 	list, err := query[model.Partner](ctx, s.db,
 		`SELECT `+partnerCols+`,
-		   p.init_receivable
+		   CASE WHEN p.type IN ('customer','both') THEN p.init_receivable ELSE 0 END
 		   + COALESCE((SELECT SUM(o.settle_amount - o.received_amount)
 		               FROM sales_orders o WHERE o.customer_id=p.id AND o.status=1),0)
 		   - COALESCE((SELECT SUM(pm.amount)
 		               FROM payments pm WHERE pm.partner_id=p.id AND pm.type='receipt'
 		                 AND pm.status=1 AND pm.order_id=0),0) AS receivable,
-		   p.init_payable
+		   CASE WHEN p.type IN ('supplier','both') THEN p.init_payable ELSE 0 END
 		   + COALESCE((SELECT SUM(o.settle_amount - o.paid_amount)
 		               FROM purchase_orders o WHERE o.supplier_id=p.id AND o.status=1),0)
 		   - COALESCE((SELECT SUM(pm.amount)
@@ -540,12 +540,22 @@ func (s *Store) GetPartner(ctx context.Context, id int64) (model.Partner, error)
 // PartnerBalance 计算往来单位应收 / 应付余额。
 func (s *Store) PartnerBalance(ctx context.Context, id int64) (model.Money, model.Money, error) {
 	var initRecv, initPay int64
+	var typ string
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT init_receivable, init_payable FROM partners WHERE id=?`, id).Scan(&initRecv, &initPay); err != nil {
+		`SELECT init_receivable, init_payable, type FROM partners WHERE id=?`, id).
+		Scan(&initRecv, &initPay, &typ); err != nil {
 		if err == sql.ErrNoRows {
 			return 0, 0, ErrNotFound
 		}
 		return 0, 0, err
+	}
+	// 与应收应付报表保持一致：纯供应商的期初应收、纯客户的期初应付
+	// 不参与余额计算，避免历史脏数据让首页和报表口径不一致。
+	if typ == "supplier" {
+		initRecv = 0
+	}
+	if typ == "customer" {
+		initPay = 0
 	}
 	var saleTotal, saleReceived, purTotal, purPaid int64
 	// 只有已确认的单据才影响应收应付，草稿和已作废单据不计入。
@@ -606,6 +616,15 @@ func (s *Store) SavePartner(ctx context.Context, id int64, in PartnerInput) (int
 	default:
 		in.Type = "customer"
 	}
+	// 期初余额必须与单位类型匹配。应收应付报表按类型筛选单位，如果
+	// 纯供应商带期初应收、纯客户带期初应付，就会出现首页/列表有金额、
+	// 对账报表却找不到对应单位的“总数对不上”问题。
+	if in.Type == "supplier" && in.InitReceivable != 0 {
+		return 0, fmt.Errorf("%w: 纯供应商不能填写期初应收；如同时经营请选择「客户兼供应商」", ErrBadRequest)
+	}
+	if in.Type == "customer" && in.InitPayable != 0 {
+		return 0, fmt.Errorf("%w: 纯客户不能填写期初应付；如同时经营请选择「客户兼供应商」", ErrBadRequest)
+	}
 	now := model.Now()
 	if id > 0 {
 		// 往来单位类型决定应收/应付报表是否展示该单位。若已有销售/收款
@@ -622,9 +641,6 @@ func (s *Store) SavePartner(ctx context.Context, id int64, in PartnerInput) (int
 			if salesRefs > 0 || receiptRefs > 0 {
 				return 0, fmt.Errorf("%w: 该单位已有销售或收款记录，不能改为纯供应商；如同时经营请选择「客户兼供应商」", ErrBadRequest)
 			}
-			if in.InitReceivable != 0 {
-				return 0, fmt.Errorf("%w: 该单位填写了期初应收，不能改为纯供应商", ErrBadRequest)
-			}
 		}
 		if in.Type == "customer" {
 			var purchaseRefs, paymentRefs int
@@ -637,9 +653,6 @@ func (s *Store) SavePartner(ctx context.Context, id int64, in PartnerInput) (int
 			}
 			if purchaseRefs > 0 || paymentRefs > 0 {
 				return 0, fmt.Errorf("%w: 该单位已有采购或付款记录，不能改为纯客户；如同时经营请选择「客户兼供应商」", ErrBadRequest)
-			}
-			if in.InitPayable != 0 {
-				return 0, fmt.Errorf("%w: 该单位填写了期初应付，不能改为纯客户", ErrBadRequest)
 			}
 		}
 		if in.Code == "" {

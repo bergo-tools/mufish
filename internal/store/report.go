@@ -50,7 +50,7 @@ func (s *Store) Dashboard(ctx context.Context) (model.DashboardSummary, error) {
 	if err != nil {
 		return d, err
 	}
-	initRecv, err := scalar(`SELECT COALESCE(SUM(init_receivable),0) FROM partners`)
+	initRecv, err := scalar(`SELECT COALESCE(SUM(init_receivable),0) FROM partners WHERE type IN ('customer','both')`)
 	if err != nil {
 		return d, err
 	}
@@ -64,7 +64,7 @@ func (s *Store) Dashboard(ctx context.Context) (model.DashboardSummary, error) {
 	if err != nil {
 		return d, err
 	}
-	initPay, err := scalar(`SELECT COALESCE(SUM(init_payable),0) FROM partners`)
+	initPay, err := scalar(`SELECT COALESCE(SUM(init_payable),0) FROM partners WHERE type IN ('supplier','both')`)
 	if err != nil {
 		return d, err
 	}

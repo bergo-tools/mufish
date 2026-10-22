@@ -18,6 +18,10 @@ import {
   METHOD_TEXT,
   PARTNER_TYPE_TEXT,
   ACCOUNT_TYPE_TEXT,
+  amountCents,
+  sumAmountCents,
+  moneyToCents,
+  moneyFromCents,
 } from '../src/format.js';
 
 test('fmtMoney 格式化金额', () => {
@@ -26,6 +30,23 @@ test('fmtMoney 格式化金额', () => {
   assert.equal(fmtMoney(0), '0.00');
   assert.equal(fmtMoney(null), '0.00');
   assert.equal(fmtMoney(12.3, true), '¥12.30');
+});
+
+test('金额精确助手与后端 AmountOf 口径一致', () => {
+  // 0.7 × 0.05 = 0.035 元，半分应进位到 0.04 元。
+  assert.equal(amountCents(0.7, 0.05), 4);
+  assert.equal(amountCents(-0.7, 0.05), -4);
+  assert.equal(amountCents(3, 12.3456), 3704);
+  assert.equal(amountCents(0, 12.3456), 0);
+  assert.equal(amountCents(3, 0), 0);
+  assert.equal(amountCents('abc', 1), 0);
+
+  assert.equal(sumAmountCents([{ qty: 0.7, price: 0.05 }, { qty: 0.7, price: 0.05 }]), 8);
+  assert.equal(sumAmountCents([]), 0);
+
+  assert.equal(moneyToCents(1.239), 124);
+  assert.equal(moneyToCents(''), 0);
+  assert.equal(moneyFromCents(8), 0.08);
 });
 
 test('fmtQty 格式化数量', () => {

@@ -2,7 +2,16 @@
 import { useEffect, useState } from 'preact/hooks';
 import { Api } from '../api.js';
 import { can, notifyError, notifyOK } from '../store.js';
-import { docStatus, fmtDate, fmtDateTime, fmtQty, today } from '../format.js';
+import {
+  amountCents,
+  docStatus,
+  fmtDate,
+  fmtDateTime,
+  fmtQty,
+  moneyFromCents,
+  sumAmountCents,
+  today,
+} from '../format.js';
 import {
   Button,
   Card,
@@ -167,7 +176,7 @@ export default function TransfersPage({ route }) {
 
   // 明细合计。
   const totalQty = rows.reduce((a, r) => a + Number(r.qty || 0), 0);
-  const totalAmount = rows.reduce((a, r) => a + Number(r.qty || 0) * Number(r.price || 0), 0);
+  const totalAmount = moneyFromCents(sumAmountCents(rows));
 
   const handleSave = async () => {
     if (!form.from_warehouse_id || !form.to_warehouse_id) {
@@ -503,7 +512,7 @@ export default function TransfersPage({ route }) {
                 title: '金额',
                 align: 'right',
                 width: 120,
-                render: (r) => <Money value={Number(r.qty || 0) * Number(r.price || 0)} />,
+                render: (r) => <Money value={moneyFromCents(amountCents(r.qty, r.price))} />,
               },
               {
                 title: '操作',

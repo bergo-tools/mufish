@@ -2,7 +2,19 @@
 import { useEffect, useState } from 'preact/hooks';
 import { Api } from '../api.js';
 import { can, notifyError, notifyOK } from '../store.js';
-import { daysAgo, docStatus, fmtDate, fmtDateTime, fmtMoney, fmtQty, today } from '../format.js';
+import {
+  amountCents,
+  daysAgo,
+  docStatus,
+  fmtDate,
+  fmtDateTime,
+  fmtMoney,
+  fmtQty,
+  moneyFromCents,
+  moneyToCents,
+  sumAmountCents,
+  today,
+} from '../format.js';
 import {
   Button,
   Card,
@@ -238,8 +250,13 @@ export default function PurchasesPage({ route }) {
   // 合计。
   const items = form ? form.items : [];
   const totalQty = items.reduce((s, it) => s + num(it.qty), 0);
-  const totalAmount = items.reduce((s, it) => s + num(it.qty) * num(it.price), 0);
-  const settleAmount = totalAmount - num(form && form.discount_amount) + num(form && form.other_fee);
+  const totalCents = sumAmountCents(items);
+  const totalAmount = moneyFromCents(totalCents);
+  const settleCents = Math.max(
+    0,
+    totalCents - moneyToCents(form && form.discount_amount) + moneyToCents(form && form.other_fee),
+  );
+  const settleAmount = moneyFromCents(settleCents);
 
   // 保存。
   const submit = async () => {
@@ -273,8 +290,8 @@ export default function PurchasesPage({ route }) {
       notifyError('其他费用不能为负数');
       return;
     }
-    const submittedTotal = rows.reduce((s, it) => s + num(it.qty) * num(it.price), 0);
-    if (num(form.discount_amount) > submittedTotal) {
+    const submittedCents = sumAmountCents(rows);
+    if (moneyToCents(form.discount_amount) > submittedCents) {
       notifyError('优惠金额不能超过明细金额');
       return;
     }
@@ -564,7 +581,9 @@ export default function PurchasesPage({ route }) {
                   title: '金额',
                   width: 104,
                   align: 'right',
-                  render: (r) => <span class="num">{fmtMoney(num(r.qty) * num(r.price))}</span>,
+                  render: (r) => (
+                    <span class="num">{fmtMoney(moneyFromCents(amountCents(r.qty, r.price)))}</span>
+                  ),
                 },
                 {
                   title: '备注',
