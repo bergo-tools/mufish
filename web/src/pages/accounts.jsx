@@ -239,7 +239,10 @@ export default function AccountsPage({ route }) {
               placeholder={null}
             />
           </Field>
-          <Field label="余额" hint="新建时的期初余额">
+          <Field
+            label="余额"
+            hint={editing ? '直接修改余额不会生成收付款记录，请确认后再保存' : '新建账户的期初余额'}
+          >
             <NumberInput value={form.balance} onInput={setField('balance')} />
           </Field>
           <Field label="排序">

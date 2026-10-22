@@ -236,6 +236,16 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (mo
 	return u, perms, nil
 }
 
+// DefaultAdminPasswordInUse 判断内置 admin 账号是否仍在使用默认口令。
+// 登录页据此决定是否展示初始账号提示，避免改密后仍误导用户。
+func (s *Store) DefaultAdminPasswordInUse(ctx context.Context) bool {
+	var hash string
+	if err := s.db.QueryRowContext(ctx, `SELECT password FROM users WHERE username='admin'`).Scan(&hash); err != nil {
+		return false
+	}
+	return auth.VerifyPassword(DefaultAdminPassword, hash)
+}
+
 // UserPerms 计算用户拥有的权限集合。
 func (s *Store) UserPerms(ctx context.Context, u model.User) (model.PermSet, error) {
 	if u.IsSuper {

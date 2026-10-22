@@ -32,7 +32,9 @@ async function request(method, path, { body, params, raw } = {}) {
     throw new Error('网络连接失败，请确认服务仍在运行');
   }
 
-  if (resp.status === 401) {
+  // 登录接口返回 401 表示“用户名或口令错误”，不是会话失效；
+  // 不能触发全局退出事件，也不能覆盖服务端给出的具体提示。
+  if (resp.status === 401 && path !== '/auth/login') {
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('mufish:unauthorized'));
     }

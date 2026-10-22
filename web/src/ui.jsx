@@ -1,6 +1,7 @@
 // 基础 UI 组件库（Preact）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { fmtMoney, fmtQty } from './format.js';
+import { notifyError } from './store.js';
 
 // ---------------------------------------------------------------------------
 // 图标
@@ -45,6 +46,19 @@ const ICON_PATHS = {
   database: 'M12 2C7 2 3 3.8 3 6v12c0 2.2 4 4 9 4s9-1.8 9-4V6c0-2.2-4-4-9-4zm0 2c4.4 0 7 1.4 7 2s-2.6 2-7 2-7-1.4-7-2 2.6-2 7-2zM5 9.6C6.6 10.5 9.1 11 12 11s5.4-.5 7-1.4V12c0 .6-2.6 2-7 2s-7-1.4-7-2V9.6zm0 5C6.6 15.5 9.1 16 12 16s5.4-.5 7-1.4V18c0 .6-2.6 2-7 2s-7-1.4-7-2v-3.4z',
   filter: 'M3 5h18v2l-7 7v6l-4 2v-8L3 7V5z',
 };
+
+export function NavItem({ href, active, icon, label }) {
+  return (
+    <a
+      class={'nav-item ' + (active ? 'active' : '')}
+      href={href}
+      aria-current={active ? 'page' : undefined}
+    >
+      {icon ? <Icon name={icon} size={15} /> : null}
+      <span>{label}</span>
+    </a>
+  );
+}
 
 export function Icon({ name, size = 16, className = '' }) {
   const d = ICON_PATHS[name] || ICON_PATHS.box;
@@ -564,6 +578,9 @@ export function usePagedList(fetcher, initialFilters = {}, initialSize = 20) {
       setError(e);
       setList([]);
       setTotal(0);
+      // 列表页即使不展示 error 状态，也要让用户知道请求失败，
+      // 而不是把失败误认为“暂无数据”。重复提示由 toast 去重。
+      notifyError(e);
     } finally {
       if (seq === reqSeq.current) setLoading(false);
     }
@@ -578,7 +595,25 @@ export function usePagedList(fetcher, initialFilters = {}, initialSize = 20) {
     setFiltersState((prev) => ({ ...prev, ...(typeof patch === 'function' ? patch(prev) : patch) }));
   }, []);
 
-  return { list, total, page, size, loading, error, filters, setFilters, setPage, setSize, reload };
+  // 每页条数变化后原来的页码没有意义，统一回到第一页。
+  const setSizeAndReset = useCallback((next) => {
+    setPage(1);
+    setSize(next);
+  }, []);
+
+  return {
+    list,
+    total,
+    page,
+    size,
+    loading,
+    error,
+    filters,
+    setFilters,
+    setPage,
+    setSize: setSizeAndReset,
+    reload,
+  };
 }
 
 // 简单异步数据加载。
@@ -594,6 +629,8 @@ export function useAsync(loader, deps = []) {
     let alive = true;
     setLoading(true);
     setError(null);
+    // 依赖变化时先清空旧数据，避免新表头/新筛选条件下短暂展示旧结果。
+    setData(null);
     loaderRef
       .current()
       .then((d) => alive && setData(d))

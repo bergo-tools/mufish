@@ -72,8 +72,29 @@ export function setSession(user, permissions) {
   session.set({ user, permissions, ready: true });
 }
 
+// 重新获取公开 meta（企业名、default_login 等）。退出/会话失效后调用，
+// 避免登录页继续使用登录前的旧提示。
+async function refreshPublicMeta() {
+  try {
+    const { Api } = await import('./api.js');
+    const meta = await Api.meta();
+    if (session.get().user) return; // 已经重新登录，忽略旧请求结果
+    session.set({ ...session.get(), meta, ready: true });
+  } catch (e) {
+    // 获取失败时保留现有 meta；登录页至少不会误显示默认口令提示。
+  }
+}
+
 export function clearSession() {
-  session.set({ user: null, permissions: [] });
+  const current = session.get();
+  // 立即隐藏默认口令提示，不等异步刷新完成。正常退出后如果管理员
+  // 仍在使用默认口令，refreshPublicMeta 会重新把提示显示出来。
+  session.set({
+    user: null,
+    permissions: [],
+    meta: { ...(current.meta || {}), default_login: false },
+  });
+  refreshPublicMeta();
 }
 
 // ---------------------------------------------------------------------------
@@ -85,8 +106,15 @@ export const toasts = createStore({ items: [] });
 let toastSeq = 0;
 
 export function toast(message, type = 'info', duration = 2600) {
+  const now = Date.now();
+  const current = toasts.get().items;
+  // 同一个错误可能同时被页面和 usePagedList 上报，短时间内去重。
+  const last = current[current.length - 1];
+  if (last && last.message === message && last.type === type && now - (last.at || 0) < 800) {
+    return;
+  }
   const id = ++toastSeq;
-  const items = [...toasts.get().items, { id, message, type }];
+  const items = [...current, { id, message, type, at: now }];
   toasts.set({ items });
   setTimeout(() => {
     toasts.set({ items: toasts.get().items.filter((t) => t.id !== id) });

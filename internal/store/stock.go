@@ -429,7 +429,9 @@ func (s *Store) SaveStockTake(ctx context.Context, id int64, in StockTakeInput, 
 				_ = tx.QueryRowContext(ctx, `SELECT purchase_price FROM products WHERE id=?`, it.ProductID).Scan(&price)
 			}
 			dq := round4(it.RealQty.Float() - bookQty)
-			da := model.Money(int64(round4(float64(price) * dq / 100)))
+			// 盘点差异金额必须按分四舍五入，不能截断小数分；否则会和
+			// applyStock 实际入库/出库的金额相差 1 分。
+			da := model.AmountOf(model.Qty(dq), model.Price(price))
 			diffQty += model.Qty(dq)
 			diffAmount += da
 			if _, err := tx.ExecContext(ctx,
@@ -785,7 +787,7 @@ func (s *Store) ConfirmTransfer(ctx context.Context, id int64, user OpUser) erro
 				return err
 			}
 			if _, err := tx.ExecContext(ctx,
-				`UPDATE transfer_items SET price=? WHERE id=?`, out.CostPrice, it.ID); err != nil {
+				`UPDATE transfer_items SET price=?, amount=? WHERE id=?`, out.CostPrice, out.Amount, it.ID); err != nil {
 				return err
 			}
 			totalAmount += out.Amount

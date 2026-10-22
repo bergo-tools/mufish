@@ -350,7 +350,9 @@ type ArApQuery struct {
 // ArApReport 应收 / 应付余额表。
 func (s *Store) ArApReport(ctx context.Context, q ArApQuery) ([]model.ArApRow, error) {
 	args := []any{}
-	cond := "p.status=1"
+	// 应收应付是余额对账表，停用单位只要仍有欠款就必须保留；
+	// 否则会和首页应收/应付合计（不区分启用状态）对不上。
+	cond := "1=1"
 	if kw := strings.TrimSpace(q.Keyword); kw != "" {
 		cond += " AND (p.code LIKE ? OR p.name LIKE ?)"
 		like := "%" + kw + "%"

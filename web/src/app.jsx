@@ -4,7 +4,7 @@ import { navigate, useRoute } from './router.js';
 import { can, clearSession, session, toast, toasts, useStore } from './store.js';
 import { firstAllowed, findTitle, NAV, routePerm } from './nav.js';
 import { Api } from './api.js';
-import { Button, ConfirmHost, Icon, ToastHost } from './ui.jsx';
+import { Button, ConfirmHost, Icon, NavItem, ToastHost } from './ui.jsx';
 
 import LoginPage from './pages/login.jsx';
 import DashboardPage from './pages/dashboard.jsx';
@@ -192,14 +192,13 @@ function Shell({ route, title, children }) {
             <div key={g.group}>
               <div class="nav-group">{g.group}</div>
               {g.items.map((it) => (
-                <div
+                <NavItem
                   key={it.key}
-                  class={'nav-item ' + (isActive(route.path, it.key) ? 'active' : '')}
-                  onClick={() => navigate(it.key)}
-                >
-                  <Icon name={it.icon} size={15} />
-                  <span>{it.label}</span>
-                </div>
+                  href={'#' + it.key}
+                  active={isActive(route.path, it.key)}
+                  icon={it.icon}
+                  label={it.label}
+                />
               ))}
             </div>
           ))}

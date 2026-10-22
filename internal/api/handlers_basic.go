@@ -21,12 +21,18 @@ func (h *Handler) meta(w http.ResponseWriter, r *http.Request) error {
 	}
 	u := user(r)
 	perms, _ := r.Context().Value(ctxPerms).(model.PermSet)
+	defaultLogin := false
+	if u.ID == 0 {
+		// 仅在匿名访问登录页时校验，避免每次已登录页面加载都跑一次 PBKDF2。
+		defaultLogin = h.st.DefaultAdminPasswordInUse(r.Context())
+	}
 	data := map[string]any{
 		"version":        h.version,
 		"company_name":   settings["company_name"],
 		"company_short":  settings["company_short"],
 		"doc_print_note": settings["doc_print_note"],
 		"logged_in":      u.ID > 0,
+		"default_login":  defaultLogin,
 	}
 	if u.ID > 0 {
 		data["user"] = u
@@ -165,6 +171,23 @@ func (h *Handler) dashboardTrend(w http.ResponseWriter, r *http.Request) error {
 	trend, err := h.st.Trend(r.Context(), days)
 	if err != nil {
 		return err
+	}
+	// 与看板首页保持同一脱敏口径：没有对应模块查看权限时不能通过
+	// 这个独立接口拿到销售/采购/毛利数据。
+	canSales := hasAnyPerm(r, "sales:view", "report:view")
+	canPurchase := hasAnyPerm(r, "purchase:view", "report:view")
+	if !canSales && !canPurchase {
+		writeOK(w, []model.TrendPoint{})
+		return nil
+	}
+	for i := range trend {
+		if !canSales {
+			trend[i].Sales = 0
+			trend[i].Profit = 0
+		}
+		if !canPurchase {
+			trend[i].Purchase = 0
+		}
 	}
 	writeOK(w, trend)
 	return nil

@@ -77,7 +77,10 @@ export default function ReportsPage() {
   const [partnerId, setPartnerId] = useState('');
   const [accountId, setAccountId] = useState('');
   const [arapType, setArapType] = useState('receivable');
+  // keyword 是已提交的查询条件；keywordInput 只保存输入框内容。
+  // 两者分离可避免每输入一个字符就刷新一次报表。
   const [keyword, setKeyword] = useState('');
+  const [keywordInput, setKeywordInput] = useState('');
   const [partnerKw, setPartnerKw] = useState('');
 
   // 下拉数据：仓库 / 分类 / 客户 / 供应商 / 资金账户。
@@ -426,9 +429,9 @@ export default function ReportsPage() {
           ) : null}
           {showKeyword ? (
             <SearchBox
-              value={keyword}
-              onInput={setKeyword}
-              onSearch={() => report.reload()}
+              value={keywordInput}
+              onInput={setKeywordInput}
+              onSearch={() => setKeyword(keywordInput.trim())}
               placeholder="商品 / 单位 / 单据号"
               width={220}
             />
@@ -451,13 +454,22 @@ export default function ReportsPage() {
             <Tag color="orange">已截断</Tag> 当前报表最多显示 {reportLimit} 条，请缩小日期范围。
           </div>
         ) : null}
-        <Table
-          columns={columns}
-          data={rows}
-          loading={report.loading}
-          empty="暂无数据"
-          footer={footer}
-        />
+        {report.error ? (
+          <div class="row-between" style="padding:12px 14px; gap:10px; flex-wrap:wrap">
+            <span class="muted small">报表加载失败：{report.error.message}</span>
+            <Button size="sm" icon="refresh" onClick={() => report.reload()}>
+              重试
+            </Button>
+          </div>
+        ) : (
+          <Table
+            columns={columns}
+            data={rows}
+            loading={report.loading}
+            empty="暂无数据"
+            footer={footer}
+          />
+        )}
       </Card>
     </div>
   );

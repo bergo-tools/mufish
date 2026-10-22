@@ -2,6 +2,7 @@ import { h } from 'preact';
 import { describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { usePagedList } from '../../src/ui.jsx';
+import { toasts } from '../../src/store.js';
 
 function deferred() {
   let resolve;
@@ -68,5 +69,34 @@ describe('usePagedList', () => {
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(screen.getByTestId('page').textContent).toBe('1'));
     expect(screen.getByTestId('list').textContent).toBe('one');
+  });
+
+  it('切换每页条数时回到第一页', async () => {
+    const fetcher = vi.fn(async ({ page, size }) => ({
+      list: [{ id: `${page}-${size}` }],
+      total: 100,
+    }));
+    render(<ListProbe fetcher={fetcher} />);
+    await waitFor(() => expect(screen.getByTestId('list').textContent).toBe('1-2'));
+
+    fireEvent.click(screen.getByText('go3'));
+    await waitFor(() => expect(screen.getByTestId('page').textContent).toBe('3'));
+
+    fireEvent.click(screen.getByText('size10'));
+    await waitFor(() => expect(screen.getByTestId('page').textContent).toBe('1'));
+    await waitFor(() => expect(screen.getByTestId('list').textContent).toBe('1-10'));
+
+    const last = fetcher.mock.calls[fetcher.mock.calls.length - 1][0];
+    expect(last).toMatchObject({ page: 1, size: 10 });
+  });
+
+  it('请求失败时提示错误，而不是让页面看起来像没有数据', async () => {
+    toasts.set({ items: [] });
+    const fetcher = vi.fn().mockRejectedValue(new Error('加载失败'));
+    render(<ListProbe fetcher={fetcher} />);
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'));
+
+    const items = toasts.get().items;
+    expect(items.some((t) => t.type === 'error' && t.message === '加载失败')).toBe(true);
   });
 });

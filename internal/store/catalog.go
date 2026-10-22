@@ -229,7 +229,9 @@ func (s *Store) AllProducts(ctx context.Context, keyword string) ([]model.Produc
 // GetProduct 按 ID 获取商品。
 func (s *Store) GetProduct(ctx context.Context, id int64) (model.Product, error) {
 	p, ok, err := queryRow[model.Product](ctx, s.db,
-		`SELECT `+productCols+` FROM products p LEFT JOIN categories c ON c.id=p.category_id WHERE p.id=?`, id)
+		`SELECT `+productCols+`,
+		   COALESCE((SELECT SUM(s.qty) FROM stocks s WHERE s.product_id=p.id),0) AS stock_qty
+		 FROM products p LEFT JOIN categories c ON c.id=p.category_id WHERE p.id=?`, id)
 	if err != nil {
 		return p, err
 	}
@@ -325,6 +327,8 @@ func (s *Store) DeleteProduct(ctx context.Context, id int64) error {
 		{`SELECT COUNT(*) FROM stocks WHERE product_id=?`, "该商品仍有库存记录"},
 		{`SELECT COUNT(*) FROM purchase_items WHERE product_id=?`, "该商品已被采购单引用"},
 		{`SELECT COUNT(*) FROM sales_items WHERE product_id=?`, "该商品已被销售单引用"},
+		{`SELECT COUNT(*) FROM transfer_items WHERE product_id=?`, "该商品已被调拨单引用"},
+		{`SELECT COUNT(*) FROM stock_take_items WHERE product_id=?`, "该商品已被盘点单引用"},
 		{`SELECT COUNT(*) FROM stock_moves WHERE product_id=?`, "该商品存在库存流水"},
 	}
 	for _, c := range checks {

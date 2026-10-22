@@ -45,6 +45,8 @@ export default function LoginPage() {
         <div class="login-form">
           <input
             class="input"
+            name="username"
+            aria-label="用户名"
             placeholder="用户名"
             autoFocus
             autocomplete="username"
@@ -53,7 +55,9 @@ export default function LoginPage() {
           />
           <input
             class="input"
+            name="password"
             type="password"
+            aria-label="口令"
             placeholder="口令"
             autocomplete="current-password"
             value={password}
@@ -65,9 +69,15 @@ export default function LoginPage() {
         </div>
 
         <div class="login-tip">
-          初始账号：<b>admin</b> / <b>admin123</b>
-          <br />
-          首次登录后请到「个人中心」修改口令。
+          {meta.default_login ? (
+            <>
+              初始账号：<b>admin</b> / <b>admin123</b>
+              <br />
+              首次登录后请到「个人中心」修改口令。
+            </>
+          ) : (
+            <span>请使用管理员分配的账号登录。</span>
+          )}
           {meta.version ? <span> · v{meta.version}</span> : null}
         </div>
       </form>

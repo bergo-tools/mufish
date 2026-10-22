@@ -16,6 +16,7 @@ import {
   Money,
   Qty,
   Empty,
+  NavItem,
 } from '../../src/ui.jsx';
 
 describe('Button', () => {
@@ -162,6 +163,19 @@ describe('Modal 与展示组件', () => {
   it('Modal 关闭时不渲染', () => {
     const { container } = render(<Modal open={false} title="隐藏" onClose={() => {}}>内容</Modal>);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('NavItem 是可用键盘聚焦的链接并标记当前页', () => {
+    const { rerender } = render(
+      <NavItem href="#/products" active icon="box" label="商品管理" />,
+    );
+    const link = screen.getByRole('link', { name: '商品管理' });
+    expect(link).toHaveAttribute('href', '#/products');
+    expect(link).toHaveAttribute('aria-current', 'page');
+    expect(link).toHaveClass('nav-item', 'active');
+
+    rerender(<NavItem href="#/sales" icon="sell" label="销售出库" />);
+    expect(screen.getByRole('link', { name: '销售出库' })).not.toHaveAttribute('aria-current');
   });
 
   it('Money/Qty/Empty 格式化', () => {
