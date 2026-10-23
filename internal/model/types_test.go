@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 )
@@ -153,6 +154,42 @@ func TestQtyJSONStringAndScan(t *testing.T) {
 	}
 }
 
+func TestJSONNumbersRejectNonFinite(t *testing.T) {
+	for _, raw := range []string{`"NaN"`, `"Inf"`, `"+Inf"`, `"-Inf"`} {
+		var m Money
+		if err := json.Unmarshal([]byte(raw), &m); err == nil {
+			t.Fatalf("金额不应接受非有限数值 %s，实际 %d", raw, m)
+		}
+		var p Price
+		if err := json.Unmarshal([]byte(raw), &p); err == nil {
+			t.Fatalf("单价不应接受非有限数值 %s，实际 %d", raw, p)
+		}
+		var q Qty
+		if err := json.Unmarshal([]byte(raw), &q); err == nil {
+			t.Fatalf("数量不应接受非有限数值 %s，实际 %v", raw, q)
+		}
+	}
+
+	for _, src := range []any{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		var m Money
+		if err := m.Scan(src); err == nil {
+			t.Fatalf("金额不应扫描非有限数值 %v，实际 %d", src, m)
+		}
+		var p Price
+		if err := p.Scan(src); err == nil {
+			t.Fatalf("单价不应扫描非有限数值 %v，实际 %d", src, p)
+		}
+		var q Qty
+		if err := q.Scan(src); err == nil {
+			t.Fatalf("数量不应扫描非有限数值 %v，实际 %v", src, q)
+		}
+	}
+	var q Qty
+	if err := q.Scan("NaN"); err == nil {
+		t.Fatalf("数量不应扫描字符串 NaN")
+	}
+}
+
 func TestAmountOf(t *testing.T) {
 	if got := AmountOf(QtyFrom(3), PriceFrom(0.3333)); got != YuanFrom(1) {
 		t.Fatalf("0.3333 * 3 应四舍五入为 1.00 元，实际 %s", got)
@@ -188,6 +225,19 @@ func TestNormDate(t *testing.T) {
 	for in, want := range cases {
 		if got := NormDate(in); got != want {
 			t.Fatalf("NormDate(%q) 期望 %s，实际 %s", in, want, got)
+		}
+	}
+}
+
+func TestValidDate(t *testing.T) {
+	for _, s := range []string{"2026-01-02", "2024-02-29"} {
+		if !ValidDate(s) {
+			t.Fatalf("%s 应为有效日期", s)
+		}
+	}
+	for _, s := range []string{"", "2026-13-01", "2026-02-30", "2026/01/02", "abc"} {
+		if ValidDate(s) {
+			t.Fatalf("%q 不应为有效日期", s)
 		}
 	}
 }

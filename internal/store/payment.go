@@ -116,10 +116,14 @@ func (s *Store) SavePayment(ctx context.Context, id int64, in PaymentInput, user
 	default:
 		in.Method = "bank"
 	}
-	in.PayDate = model.NormDate(in.PayDate)
+	payDate, err := normalizeDocDate(in.PayDate)
+	if err != nil {
+		return 0, err
+	}
+	in.PayDate = payDate
 	now := model.Now()
 
-	err := s.Tx(ctx, func(tx *sql.Tx) error {
+	err = s.Tx(ctx, func(tx *sql.Tx) error {
 		partnerRole := "customer"
 		if in.Type == model.PayTypePayment {
 			partnerRole = "supplier"

@@ -193,6 +193,17 @@ func reverseMovesByBiz(ctx context.Context, tx *sql.Tx, bizType string, bizID in
 
 func round4(v float64) float64 { return math.Round(v*10000) / 10000 }
 
+// normalizeDocDate 统一规范单据日期，并拒绝无法解析的日期。
+// 不能像 model.NormDate 那样把 2026-13-99 原样写入数据库，否则列表排序
+// 和报表筛选会得到难以解释的结果。
+func normalizeDocDate(value string) (string, error) {
+	d := model.NormDate(value)
+	if !model.ValidDate(d) {
+		return "", fmt.Errorf("%w: 日期格式有误，应为 YYYY-MM-DD", ErrBadRequest)
+	}
+	return d, nil
+}
+
 // ---------------------------------------------------------------------------
 // 单据明细通用
 // ---------------------------------------------------------------------------
@@ -347,10 +358,14 @@ func (s *Store) SavePurchase(ctx context.Context, id int64, in PurchaseInput, us
 	if in.OtherFee < 0 {
 		return 0, fmt.Errorf("%w: 其他费用不能为负数", ErrBadRequest)
 	}
-	in.OrderDate = model.NormDate(in.OrderDate)
+	orderDate, err := normalizeDocDate(in.OrderDate)
+	if err != nil {
+		return 0, err
+	}
+	in.OrderDate = orderDate
 	now := model.Now()
 
-	err := s.Tx(ctx, func(tx *sql.Tx) error {
+	err = s.Tx(ctx, func(tx *sql.Tx) error {
 		supplier, err := loadPartnerForRole(ctx, tx, in.SupplierID, "supplier")
 		if err != nil {
 			return err
@@ -742,10 +757,14 @@ func (s *Store) SaveSales(ctx context.Context, id int64, in SalesInput, user OpU
 	if in.OtherFee < 0 {
 		return 0, fmt.Errorf("%w: 其他费用不能为负数", ErrBadRequest)
 	}
-	in.OrderDate = model.NormDate(in.OrderDate)
+	orderDate, err := normalizeDocDate(in.OrderDate)
+	if err != nil {
+		return 0, err
+	}
+	in.OrderDate = orderDate
 	now := model.Now()
 
-	err := s.Tx(ctx, func(tx *sql.Tx) error {
+	err = s.Tx(ctx, func(tx *sql.Tx) error {
 		customer, err := loadPartnerForRole(ctx, tx, in.CustomerID, "customer")
 		if err != nil {
 			return err

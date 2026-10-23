@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"mufish/internal/model"
@@ -35,6 +36,9 @@ type Handler struct {
 	cookie  string
 	dataDir string
 	started time.Time
+
+	// backupMu 串行化备份与恢复，避免并发 VACUUM INTO / 恢复互相踩踏。
+	backupMu sync.Mutex
 }
 
 // Options 构造参数。
@@ -472,5 +476,3 @@ func clientIP(r *http.Request) string {
 	}
 	return host
 }
-
-func nowStamp() string { return time.Now().Format("20060102-150405") }

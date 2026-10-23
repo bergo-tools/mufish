@@ -265,13 +265,21 @@ func (s *Store) SalesRank(ctx context.Context, q RankQuery) ([]model.RankRow, er
 	from, to := dateRange(q.From, q.To)
 	return query[model.RankRow](ctx, s.db,
 		`WITH s AS (
-		   SELECT i.product_code AS code, i.product_name AS name, i.spec AS spec, i.unit AS unit,
-		     SUM(i.qty) AS qty, SUM(i.amount) AS amount,
-		     SUM(i.cost_price * i.qty) / 100.0 AS cost,
+		   SELECT p.code AS code, COALESCE(p.name, MAX(i.product_name)) AS name,
+		     COALESCE(p.spec, MAX(i.spec)) AS spec, COALESCE(p.unit, MAX(i.unit)) AS unit,
+		     SUM(i.qty) AS qty,
+		     ROUND(SUM(CASE WHEN o.total_amount > 0
+		                  THEN i.amount * 1.0 * o.settle_amount / o.total_amount
+		                  WHEN o.total_qty > 0
+		                  THEN i.qty * 1.0 * o.settle_amount / o.total_qty
+		                  ELSE 0 END)) AS amount,
+		     ROUND(SUM(i.cost_price * i.qty) / 100.0) AS cost,
 		     COUNT(DISTINCT i.order_id) AS doc_count
-		   FROM sales_items i JOIN sales_orders o ON o.id = i.order_id
+		   FROM sales_items i
+		   JOIN sales_orders o ON o.id = i.order_id
+		   LEFT JOIN products p ON p.id = i.product_id
 		   WHERE o.status=1 AND o.order_date >= ? AND o.order_date <= ?
-		   GROUP BY i.product_id, i.product_code, i.product_name, i.spec, i.unit
+		   GROUP BY i.product_id, p.code, p.name, p.spec, p.unit
 		 )
 		 SELECT code, name, spec, unit, qty, amount,
 		   CAST(ROUND(cost) AS INTEGER) AS cost,
@@ -288,15 +296,16 @@ func (s *Store) CustomerRank(ctx context.Context, q RankQuery) ([]model.RankRow,
 	}
 	from, to := dateRange(q.From, q.To)
 	return query[model.RankRow](ctx, s.db,
-		`SELECT o.customer_name AS name, '' AS code, '' AS spec, '' AS unit,
+		`SELECT COALESCE(p.name, MAX(o.customer_name)) AS name, '' AS code, '' AS spec, '' AS unit,
 		   SUM(o.total_qty) AS qty, SUM(o.settle_amount) AS amount, SUM(o.cost_amount) AS cost,
 		   SUM(o.settle_amount - o.cost_amount) AS profit,
 		   CASE WHEN SUM(o.settle_amount) > 0
 		     THEN SUM(o.settle_amount - o.cost_amount) * 100.0 / SUM(o.settle_amount) ELSE 0 END AS rate,
 		   COUNT(*) AS doc_count
 		 FROM sales_orders o
+		 LEFT JOIN partners p ON p.id = o.customer_id
 		 WHERE o.status=1 AND o.order_date >= ? AND o.order_date <= ?
-		 GROUP BY o.customer_id, o.customer_name
+		 GROUP BY o.customer_id, p.name
 		 ORDER BY amount DESC LIMIT ?`, from, to, q.Limit)
 }
 
@@ -307,12 +316,13 @@ func (s *Store) SupplierRank(ctx context.Context, q RankQuery) ([]model.RankRow,
 	}
 	from, to := dateRange(q.From, q.To)
 	return query[model.RankRow](ctx, s.db,
-		`SELECT o.supplier_name AS name, '' AS code, '' AS spec, '' AS unit,
+		`SELECT COALESCE(p.name, MAX(o.supplier_name)) AS name, '' AS code, '' AS spec, '' AS unit,
 		   SUM(o.total_qty) AS qty, SUM(o.settle_amount) AS amount, 0 AS cost, 0 AS profit, 0 AS rate,
 		   COUNT(*) AS doc_count
 		 FROM purchase_orders o
+		 LEFT JOIN partners p ON p.id = o.supplier_id
 		 WHERE o.status=1 AND o.order_date >= ? AND o.order_date <= ?
-		 GROUP BY o.supplier_id, o.supplier_name
+		 GROUP BY o.supplier_id, p.name
 		 ORDER BY amount DESC LIMIT ?`, from, to, q.Limit)
 }
 
@@ -323,12 +333,21 @@ func (s *Store) PurchaseRank(ctx context.Context, q RankQuery) ([]model.RankRow,
 	}
 	from, to := dateRange(q.From, q.To)
 	return query[model.RankRow](ctx, s.db,
-		`SELECT i.product_code AS code, i.product_name AS name, i.spec AS spec, i.unit AS unit,
-		   SUM(i.qty) AS qty, SUM(i.amount) AS amount, 0 AS cost, 0 AS profit, 0 AS rate,
+		`SELECT p.code AS code, COALESCE(p.name, MAX(i.product_name)) AS name,
+		   COALESCE(p.spec, MAX(i.spec)) AS spec, COALESCE(p.unit, MAX(i.unit)) AS unit,
+		   SUM(i.qty) AS qty,
+		   ROUND(SUM(CASE WHEN o.total_amount > 0
+		                THEN i.amount * 1.0 * o.settle_amount / o.total_amount
+		                WHEN o.total_qty > 0
+		                THEN i.qty * 1.0 * o.settle_amount / o.total_qty
+		                ELSE 0 END)) AS amount,
+		   0 AS cost, 0 AS profit, 0 AS rate,
 		   COUNT(DISTINCT i.order_id) AS doc_count
-		 FROM purchase_items i JOIN purchase_orders o ON o.id = i.order_id
+		 FROM purchase_items i
+		 JOIN purchase_orders o ON o.id = i.order_id
+		 LEFT JOIN products p ON p.id = i.product_id
 		 WHERE o.status=1 AND o.order_date >= ? AND o.order_date <= ?
-		 GROUP BY i.product_id, i.product_code, i.product_name, i.spec, i.unit
+		 GROUP BY i.product_id, p.code, p.name, p.spec, p.unit
 		 ORDER BY amount DESC LIMIT ?`, from, to, q.Limit)
 }
 

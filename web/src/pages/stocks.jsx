@@ -84,12 +84,13 @@ export default function StocksPage({ route }) {
   const categoryOptions = (categories.data || []).map((c) => ({ value: String(c.id), label: c.name }));
 
   const doSearch = () => setFilters({ keyword });
+  const stockScopeText = filters.warehouse_id ? '当前筛选仓库' : '全部仓库合计';
 
   return (
     <div class="page">
       <div class="stats">
         <StatCard label="在库商品种类" value={String(s.kinds || 0)} icon="box" color="blue" sub="按商品去重统计" />
-        <StatCard label="库存总数量" value={fmtQty(s.qty)} icon="database" color="green" sub="全部仓库合计" />
+        <StatCard label="库存总数量" value={fmtQty(s.qty)} icon="database" color="green" sub={stockScopeText} />
         <StatCard label="库存总金额" value={fmtMoney(s.amount, true)} icon="money" color="purple" sub="按库存成本计价" />
       </div>
 

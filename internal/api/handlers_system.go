@@ -323,13 +323,40 @@ func (h *Handler) listBackups(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// nextBackupName 生成一个当前目录内不存在的备份文件名。
+// 备份名精确到秒，同一秒内第二次备份需要追加序号，否则 VACUUM INTO
+// 会因为目标文件已存在而失败。
+func nextBackupName(dir string, now time.Time) (string, error) {
+	base := "mufish-" + now.Format("20060102-150405")
+	for i := 1; i <= 10000; i++ {
+		suffix := ""
+		if i > 1 {
+			suffix = "-" + strconv.Itoa(i)
+		}
+		name := base + suffix + ".db"
+		_, err := os.Stat(filepath.Join(dir, name))
+		if os.IsNotExist(err) {
+			return name, nil
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("无法生成不重复的备份文件名")
+}
+
 // backup 生成数据库备份文件。
 func (h *Handler) backup(w http.ResponseWriter, r *http.Request) error {
 	dir := h.backupDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("创建备份目录失败: %w", err)
 	}
-	name := "mufish-" + nowStamp() + ".db"
+	h.backupMu.Lock()
+	defer h.backupMu.Unlock()
+	name, err := nextBackupName(dir, time.Now())
+	if err != nil {
+		return fmt.Errorf("生成备份文件名失败: %w", err)
+	}
 	dest := filepath.Join(dir, name)
 	if err := h.st.BackupTo(r.Context(), dest); err != nil {
 		return fmt.Errorf("备份失败: %w", err)
@@ -360,6 +387,8 @@ func (h *Handler) restore(w http.ResponseWriter, r *http.Request) error {
 	if _, err := os.Stat(src); err != nil {
 		return store.NewError(404, "备份文件不存在")
 	}
+	h.backupMu.Lock()
+	defer h.backupMu.Unlock()
 	u := user(r)
 	if err := h.st.RestoreFrom(r.Context(), src); err != nil {
 		return fmt.Errorf("恢复失败: %w", err)

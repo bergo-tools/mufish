@@ -365,9 +365,13 @@ func (s *Store) SaveStockTake(ctx context.Context, id int64, in StockTakeInput, 
 		}
 		seen[it.ProductID] = true
 	}
-	in.TakeDate = model.NormDate(in.TakeDate)
+	takeDate, err := normalizeDocDate(in.TakeDate)
+	if err != nil {
+		return 0, err
+	}
+	in.TakeDate = takeDate
 	now := model.Now()
-	err := s.Tx(ctx, func(tx *sql.Tx) error {
+	err = s.Tx(ctx, func(tx *sql.Tx) error {
 		whID, wh, err := loadWarehouse(ctx, tx, in.WarehouseID)
 		if err != nil {
 			return err
@@ -659,9 +663,13 @@ func (s *Store) SaveTransfer(ctx context.Context, id int64, in TransferInput, us
 			return 0, fmt.Errorf("%w: 第 %d 行数量必须大于 0", ErrBadRequest, i+1)
 		}
 	}
-	in.TransferDate = model.NormDate(in.TransferDate)
+	transferDate, err := normalizeDocDate(in.TransferDate)
+	if err != nil {
+		return 0, err
+	}
+	in.TransferDate = transferDate
 	now := model.Now()
-	err := s.Tx(ctx, func(tx *sql.Tx) error {
+	err = s.Tx(ctx, func(tx *sql.Tx) error {
 		_, from, err := loadWarehouse(ctx, tx, in.FromWarehouseID)
 		if err != nil {
 			return err

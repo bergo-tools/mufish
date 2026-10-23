@@ -1,5 +1,5 @@
 // 库存盘点：盘点单查询、实盘录入、完成与作废。
-import { useState } from 'preact/hooks';
+import { useRef, useState } from 'preact/hooks';
 import { Api } from '../api.js';
 import { can, notifyError, notifyOK } from '../store.js';
 import { amountCents, fmtDate, fmtDateTime, fmtQty, moneyFromCents, today } from '../format.js';
@@ -89,6 +89,8 @@ export default function StockTakesPage({ route }) {
   const [form, setForm] = useState({ id: 0, warehouse_id: '', take_date: today(), remark: '' });
   const [rows, setRows] = useState([]);
   const [bookLoading, setBookLoading] = useState(false);
+  // 盘点明细请求序号：快速切换仓库时只接受最后一次请求的结果。
+  const bookReqSeq = useRef(0);
   // 盘盈/零库存商品需要单独添加，不能只依赖 stocks 表。
   const [productKw, setProductKw] = useState('');
   const [productResults, setProductResults] = useState([]);
@@ -98,10 +100,18 @@ export default function StockTakesPage({ route }) {
   const [viewOpen, setViewOpen] = useState(false);
   const [viewData, setViewData] = useState(null);
 
-  // 拉取账面库存作为盘点明细（keepEdits 用于保留已录入的实盘数量与备注）。
-  const loadBook = async (warehouseId, keepEdits) => {
+  // 拉取账面库存作为盘点明细。
+  //
+  // existingRows：同一仓库刷新时传入当前明细。账面仍有库存的商品会更新
+  // 账面数量但保留实盘数/备注；账面已为 0 的手工行继续保留，避免刷新把
+  // 盘盈或零库存商品丢掉。
+  // clearOnError：切换仓库时必须为 true。旧仓库明细不能留在新仓库表单里，
+  // 否则保存会把旧仓库商品按实盘数写入新仓库。
+  const loadBook = async (warehouseId, existingRows, clearOnError) => {
+    const seq = ++bookReqSeq.current;
     if (!warehouseId) {
       setRows([]);
+      setBookLoading(false);
       return;
     }
     setBookLoading(true);
@@ -115,38 +125,43 @@ export default function StockTakesPage({ route }) {
         const total = Number((res && res.total) || 0);
         if (batch.length < 500 || (total > 0 && stockList.length >= total) || page >= 100) break;
       }
-      setRows(
-        stockList.map((s) => {
-          const kept = (keepEdits && keepEdits[s.product_id]) || null;
-          const bookQty = Number(s.qty || 0);
-          const hasReal = kept && kept.real_qty !== undefined && kept.real_qty !== null && kept.real_qty !== '';
-          return {
-            product_id: s.product_id,
-            product_code: s.product_code,
-            product_name: s.product_name,
-            spec: s.spec,
-            unit: s.unit,
-            book_qty: bookQty,
-            real_qty: hasReal ? kept.real_qty : bookQty,
-            price: Number(s.cost_price || 0),
-            remark: kept && kept.remark ? kept.remark : '',
-          };
-        }),
+      if (seq !== bookReqSeq.current) return;
+      const existing = new Map(
+        (existingRows || []).map((r) => [String(r.product_id), r]),
       );
+      const seen = new Set();
+      const next = stockList.map((s) => {
+        seen.add(String(s.product_id));
+        const kept = existing.get(String(s.product_id)) || null;
+        const bookQty = Number(s.qty || 0);
+        const hasReal =
+          kept && kept.real_qty !== undefined && kept.real_qty !== null && kept.real_qty !== '';
+        return {
+          product_id: s.product_id,
+          product_code: s.product_code,
+          product_name: s.product_name,
+          spec: s.spec,
+          unit: s.unit,
+          book_qty: bookQty,
+          real_qty: hasReal ? kept.real_qty : bookQty,
+          price: Number(s.cost_price || 0),
+          remark: kept && kept.remark ? kept.remark : '',
+        };
+      });
+      // 已有但当前仓库账面为 0 的明细（手工添加的盘盈/零库存商品）继续保留。
+      (existingRows || []).forEach((r) => {
+        if (!seen.has(String(r.product_id))) {
+          next.push({ ...r, book_qty: 0 });
+        }
+      });
+      setRows(next);
     } catch (e) {
+      if (seq !== bookReqSeq.current) return;
+      if (clearOnError) setRows([]);
       notifyError(e);
     } finally {
-      setBookLoading(false);
+      if (seq === bookReqSeq.current) setBookLoading(false);
     }
-  };
-
-  // 当前明细的实盘数量与备注快照。
-  const editMap = () => {
-    const map = {};
-    rows.forEach((r) => {
-      map[r.product_id] = { real_qty: r.real_qty, remark: r.remark };
-    });
-    return map;
   };
 
   const openCreate = () => {
@@ -154,12 +169,15 @@ export default function StockTakesPage({ route }) {
     setForm({ id: 0, warehouse_id: wid, take_date: today(), remark: '' });
     setRows([]);
     setEditOpen(true);
-    if (wid) loadBook(wid, null);
+    loadBook(wid, [], true);
   };
 
   const openEdit = async (row) => {
     try {
       const detail = await Api.stockTake(row.id);
+      // 使仍在外面的账面库存请求失效，避免迟到响应覆盖编辑中的明细。
+      bookReqSeq.current += 1;
+      setBookLoading(false);
       setForm({
         id: detail.id,
         warehouse_id: String(detail.warehouse_id || ''),
@@ -195,10 +213,12 @@ export default function StockTakesPage({ route }) {
     }
   };
 
-  // 切换仓库时重新拉取账面库存。
+  // 切换仓库时重新拉取账面库存。旧仓库明细必须立即清空，不能等待
+  // 新请求返回，也不能在失败时保留。
   const handleWarehouseChange = (v) => {
     setForm((f) => ({ ...f, warehouse_id: v }));
-    loadBook(v, editMap());
+    setRows([]);
+    loadBook(v, [], true);
   };
 
   const updateRow = (index, patch) => {
@@ -251,6 +271,10 @@ export default function StockTakesPage({ route }) {
   const handleSave = async () => {
     if (!form.warehouse_id) {
       notifyError(new Error('请选择盘点仓库'));
+      return;
+    }
+    if (bookLoading) {
+      notifyError(new Error('账面库存正在加载，请稍候再保存'));
       return;
     }
     if (rows.length === 0) {
@@ -473,7 +497,13 @@ export default function StockTakesPage({ route }) {
         footer={
           <>
             <Button onClick={() => setEditOpen(false)}>取消</Button>
-            <Button variant="primary" icon="save" loading={saving} onClick={handleSave}>
+            <Button
+              variant="primary"
+              icon="save"
+              loading={saving}
+              disabled={bookLoading}
+              onClick={handleSave}
+            >
               保存
             </Button>
           </>
@@ -511,7 +541,7 @@ export default function StockTakesPage({ route }) {
             icon="refresh"
             loading={bookLoading}
             disabled={!form.warehouse_id}
-            onClick={() => loadBook(form.warehouse_id, editMap())}
+            onClick={() => loadBook(form.warehouse_id, rows, false)}
           >
             刷新账面库存
           </Button>

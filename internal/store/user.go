@@ -92,6 +92,9 @@ func (s *Store) CreateUser(ctx context.Context, in UserInput) (int64, error) {
 	if in.Username == "" {
 		return 0, fmt.Errorf("%w: 登录名不能为空", ErrBadRequest)
 	}
+	if err := s.checkUserRole(ctx, in.RoleID); err != nil {
+		return 0, err
+	}
 	if len(in.Password) < 6 {
 		return 0, fmt.Errorf("%w: 口令至少 6 位", ErrBadRequest)
 	}
@@ -110,6 +113,23 @@ func (s *Store) CreateUser(ctx context.Context, in UserInput) (int64, error) {
 	return res.LastInsertId()
 }
 
+// checkUserRole 校验用户角色是否真实存在。role_id=0 表示“未分配角色”，
+// 是系统显式支持的状态；非 0 的脏角色 ID 必须拒绝，否则用户能登录却
+// 拿不到任何权限，且用户列表无法显示角色名。
+func (s *Store) checkUserRole(ctx context.Context, roleID int64) error {
+	if roleID == 0 {
+		return nil
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM roles WHERE id=?`, roleID).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("%w: 所选角色不存在，请重新选择", ErrBadRequest)
+	}
+	return nil
+}
+
 // UpdateUser 修改用户。
 func (s *Store) UpdateUser(ctx context.Context, id int64, in UserInput) error {
 	u, err := s.GetUser(ctx, id)
@@ -118,6 +138,9 @@ func (s *Store) UpdateUser(ctx context.Context, id int64, in UserInput) error {
 	}
 	if u.IsSuper && in.Status == 0 {
 		return fmt.Errorf("%w: 内置超级管理员不可停用", ErrBadRequest)
+	}
+	if err := s.checkUserRole(ctx, in.RoleID); err != nil {
+		return err
 	}
 	now := model.Now()
 	return s.Tx(ctx, func(tx *sql.Tx) error {

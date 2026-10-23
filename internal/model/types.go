@@ -142,17 +142,26 @@ func (q *Qty) Scan(src any) error {
 	case int64:
 		*q = Qty(v)
 	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("无法解析数量: 非有限数值 %v", v)
+		}
 		*q = Qty(v)
 	case []byte:
 		f, err := strconv.ParseFloat(strings.TrimSpace(string(v)), 64)
 		if err != nil {
 			return fmt.Errorf("无法解析数量 %q: %w", string(v), err)
 		}
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return fmt.Errorf("无法解析数量 %q: 非有限数值", string(v))
+		}
 		*q = Qty(f)
 	case string:
 		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
 		if err != nil {
 			return fmt.Errorf("无法解析数量 %q: %w", v, err)
+		}
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return fmt.Errorf("无法解析数量 %q: 非有限数值", v)
 		}
 		*q = Qty(f)
 	default:
@@ -200,7 +209,16 @@ func parseJSONNumber(b []byte) (float64, error) {
 	if s == "" {
 		return 0, nil
 	}
-	return strconv.ParseFloat(s, 64)
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, err
+	}
+	// encoding/json 会拒绝 NaN / Inf 字面量，但自定义 Unmarshal 还接受
+	// 字符串形式；若不在这里拦截，非法值会绕过后续的 <0 等业务校验。
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("不是有效数字（%q）", s)
+	}
+	return f, nil
 }
 
 func scanInt(src any) (int64, error) {
@@ -210,6 +228,9 @@ func scanInt(src any) (int64, error) {
 	case int64:
 		return v, nil
 	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0, fmt.Errorf("无法解析整数: 非有限数值 %v", v)
+		}
 		return int64(math.Round(v)), nil
 	case []byte:
 		if len(v) == 0 {
@@ -257,6 +278,12 @@ func NormDate(s string) string {
 		return s[:10]
 	}
 	return s
+}
+
+// ValidDate 判断字符串是否为 YYYY-MM-DD 格式的有效日期。
+func ValidDate(s string) bool {
+	_, err := time.ParseInLocation(DateLayout, s, time.Local)
+	return err == nil
 }
 
 // JSONNumber 把数值原样输出（用于自定义 Marshal）。
